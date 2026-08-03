@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hnbm"
+version = "0.1.0"
+description = "Heterogeneous Newton Boosting Machine"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [{name = "Qian Capital", email = "samson.qian@qiancapital.com"}]
+keywords = ["boosting", "gradient-boosting", "hnbm", "heterogeneous-newton"]
+dependencies = [
+    "numpy>=1.20",
+    "scikit-learn>=1.0",
+    "tqdm>=4.50",
+]
+
+[project.urls]
+Homepage = "https://github.com/qiancapital-dev/hnbm"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hnbm*"]
