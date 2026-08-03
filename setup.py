@@ -21,7 +21,7 @@ def _parse_requirements(file_path):
 
 setup(
     name="hnbm",
-    version="0.1.0",
+    version="0.1.1",
     author="Qian Capital",
     author_email="samson.qian@qiancapital.com",
     packages=["hnbm"],

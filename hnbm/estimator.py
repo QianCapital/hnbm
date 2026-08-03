@@ -1,6 +1,6 @@
 import numpy as np
 from tqdm import tqdm
-from sklearn.base import BaseEstimator, clone
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin, clone
 from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score, mean_squared_error, log_loss, r2_score
 from sklearn.utils.validation import check_is_fitted
@@ -274,3 +274,85 @@ class HNBM(BaseEstimator):
             loss = np.sqrt(mean_squared_error(y, preds))
             print("RMSE: %.4f" % loss)
         return loss
+
+
+class HNBMClassifier(HNBM, ClassifierMixin):
+    """
+    Heterogeneous Newton Boosting Machine for binary classification.
+
+    Subclass ``HNBMClassifier`` and configure ``base_learners_`` and
+    ``probabilities_`` before calling ``fit``.
+
+    Parameters
+    ----------
+    num_iterations : int, default=100
+        Number of boosting iterations.
+    learning_rate : float, default=0.1
+        Shrinkage applied to each learner's contribution.
+    random_state : int or None, default=None
+        Random seed for base learner selection.
+    verbose : bool, default=True
+        Whether to show a progress bar during training.
+    """
+    _mode = "classification"
+
+    def __init__(
+        self,
+        num_iterations=100,
+        learning_rate=0.1,
+        random_state=None,
+        verbose=True,
+    ):
+        super().__init__(
+            num_iterations=num_iterations,
+            learning_rate=learning_rate,
+            mode=self._mode,
+            random_state=random_state,
+            verbose=verbose,
+        )
+
+    def set_params(self, **params):
+        if "mode" in params:
+            raise ValueError("mode cannot be set on HNBMClassifier.")
+        return super().set_params(**params)
+
+
+class HNBMRegressor(HNBM, RegressorMixin):
+    """
+    Heterogeneous Newton Boosting Machine for regression.
+
+    Subclass ``HNBMRegressor`` and configure ``base_learners_`` and
+    ``probabilities_`` before calling ``fit``.
+
+    Parameters
+    ----------
+    num_iterations : int, default=100
+        Number of boosting iterations.
+    learning_rate : float, default=0.1
+        Shrinkage applied to each learner's contribution.
+    random_state : int or None, default=None
+        Random seed for base learner selection.
+    verbose : bool, default=True
+        Whether to show a progress bar during training.
+    """
+    _mode = "regression"
+
+    def __init__(
+        self,
+        num_iterations=100,
+        learning_rate=0.1,
+        random_state=None,
+        verbose=True,
+    ):
+        super().__init__(
+            num_iterations=num_iterations,
+            learning_rate=learning_rate,
+            mode=self._mode,
+            random_state=random_state,
+            verbose=verbose,
+        )
+
+    def set_params(self, **params):
+        if "mode" in params:
+            raise ValueError("mode cannot be set on HNBMRegressor.")
+        return super().set_params(**params)
