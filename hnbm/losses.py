@@ -16,8 +16,17 @@ class Logistic:
 
     @staticmethod
     def compute_derivatives(y, f):
-        tmp = np.exp(-np.multiply(y, f))
-        tmp2 = np.divide(tmp, 1 + tmp)
-        g = -np.multiply(y, tmp2)
-        h = np.multiply(tmp2, 1.0 - tmp2)
+        margin = np.multiply(y, f)
+        probability_wrong = np.empty_like(margin, dtype=float)
+        nonnegative = margin >= 0
+
+        exp_negative = np.exp(-margin[nonnegative])
+        probability_wrong[nonnegative] = exp_negative / (1.0 + exp_negative)
+
+        exp_positive = np.exp(margin[~nonnegative])
+        probability_wrong[~nonnegative] = 1.0 / (1.0 + exp_positive)
+
+        g = -np.multiply(y, probability_wrong)
+        h = np.multiply(probability_wrong, 1.0 - probability_wrong)
+        h = np.maximum(h, np.finfo(float).eps)
         return g, h

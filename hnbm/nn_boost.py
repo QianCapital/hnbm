@@ -1,3 +1,5 @@
+from numbers import Integral
+
 from .estimator import HNBM, HNBMClassifier, HNBMRegressor
 from .nn_learner import make_shallow_nn_pool
 
@@ -34,8 +36,11 @@ class _NNBoostMixin:
     def _validate_nn_boost_params(self):
         if not self.hidden_layer_sizes:
             raise ValueError("hidden_layer_sizes must contain at least one size.")
-        if any(size < 1 for size in self.hidden_layer_sizes):
-            raise ValueError("Each hidden layer size must be >= 1.")
+        if any(
+            not isinstance(size, Integral) or size < 1
+            for size in self.hidden_layer_sizes
+        ):
+            raise ValueError("Each hidden layer size must be an integer >= 1.")
         if self.activation not in ("relu", "tanh", "logistic"):
             raise ValueError(
                 "activation must be 'relu', 'tanh', or 'logistic', "
@@ -72,7 +77,7 @@ class _NNBoostMixin:
         return result
 
 
-class NNBoost(HNBM, _NNBoostMixin):
+class NNBoost(_NNBoostMixin, HNBM):
     """
     HNBM that uses a pool of shallow neural network base learners.
 
@@ -94,7 +99,7 @@ class NNBoost(HNBM, _NNBoostMixin):
         tol=1e-5,
         mode="classification",
         random_state=None,
-        verbose=True,
+        verbose=False,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -118,7 +123,7 @@ class NNBoost(HNBM, _NNBoostMixin):
         return self._set_nn_boost_params(**params)
 
 
-class NNBoostClassifier(HNBMClassifier, _NNBoostMixin):
+class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
     """
     HNBM for binary classification using shallow neural network base learners.
 
@@ -154,7 +159,7 @@ class NNBoostClassifier(HNBMClassifier, _NNBoostMixin):
         max_iter=200,
         tol=1e-5,
         random_state=None,
-        verbose=True,
+        verbose=False,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -179,7 +184,7 @@ class NNBoostClassifier(HNBMClassifier, _NNBoostMixin):
         return self._set_nn_boost_params(**params)
 
 
-class NNBoostRegressor(HNBMRegressor, _NNBoostMixin):
+class NNBoostRegressor(_NNBoostMixin, HNBMRegressor):
     """
     HNBM for regression using shallow neural network base learners.
 
@@ -215,7 +220,7 @@ class NNBoostRegressor(HNBMRegressor, _NNBoostMixin):
         max_iter=200,
         tol=1e-5,
         random_state=None,
-        verbose=True,
+        verbose=False,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,

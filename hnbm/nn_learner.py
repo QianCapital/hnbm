@@ -1,20 +1,39 @@
 import numpy as np
+from numbers import Integral
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
+
+
+def _relu(z):
+    return np.maximum(0.0, z)
+
+
+def _relu_derivative(z):
+    return (z > 0).astype(float)
+
+
+def _tanh_derivative(z):
+    return 1.0 - np.tanh(z) ** 2
+
+
+def _logistic(z):
+    z = np.clip(z, -500.0, 500.0)
+    return 1.0 / (1.0 + np.exp(-z))
+
+
+def _logistic_derivative(z):
+    activation = _logistic(z)
+    return activation * (1.0 - activation)
 
 
 def _activation(name):
     if name == "relu":
-        return lambda z: np.maximum(0.0, z), lambda z: (z > 0).astype(float)
+        return _relu, _relu_derivative
     if name == "tanh":
-        return np.tanh, lambda z: 1.0 - np.tanh(z) ** 2
+        return np.tanh, _tanh_derivative
     if name == "logistic":
-        def logistic(z):
-            z = np.clip(z, -500.0, 500.0)
-            return 1.0 / (1.0 + np.exp(-z))
-
-        return logistic, lambda z: logistic(z) * (1.0 - logistic(z))
+        return _logistic, _logistic_derivative
     raise ValueError(
         f"activation must be 'relu', 'tanh', or 'logistic', got {name!r}."
     )
@@ -65,9 +84,10 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
         self.random_state = random_state
 
     def _validate_params(self):
-        if self.hidden_layer_size < 1:
+        if not isinstance(self.hidden_layer_size, Integral) or self.hidden_layer_size < 1:
             raise ValueError(
-                f"hidden_layer_size must be >= 1, got {self.hidden_layer_size}."
+                "hidden_layer_size must be an integer >= 1, "
+                f"got {self.hidden_layer_size}."
             )
         if self.alpha < 0:
             raise ValueError(f"alpha must be >= 0, got {self.alpha}.")
@@ -113,13 +133,15 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
         grad_output = 2.0 * sample_weight * (y_pred - y) / weight_sum
         grad_output_col = grad_output.reshape(-1, 1)
 
-        grad_coef_output = self._hidden.T @ grad_output_col + self.alpha * self.coef_output_
+        grad_coef_output = (
+            self._hidden.T @ grad_output_col + 2.0 * self.alpha * self.coef_output_
+        )
         grad_intercept_output = np.sum(grad_output_col, axis=0)
 
         grad_hidden = grad_output_col @ self.coef_output_.T
         grad_z_hidden = grad_hidden * self._act_deriv(self._z_hidden)
 
-        grad_coef_input = X.T @ grad_z_hidden + self.alpha * self.coef_input_
+        grad_coef_input = X.T @ grad_z_hidden + 2.0 * self.alpha * self.coef_input_
         grad_intercept_hidden = np.sum(grad_z_hidden, axis=0)
 
         return (
@@ -132,14 +154,7 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
     def fit(self, X, y, sample_weight=None):
         self._validate_params()
 
-        X = np.asarray(X, dtype=float)
-        if X.ndim == 1:
-            X = X.reshape(1, -1)
-        y = np.asarray(y, dtype=float).ravel()
-        if y.shape[0] != X.shape[0]:
-            raise ValueError(
-                f"X and y have inconsistent lengths: {X.shape[0]} vs {y.shape[0]}."
-            )
+        X, y = check_X_y(X, y, dtype=float, y_numeric=True)
 
         if sample_weight is None:
             sample_weight = np.ones(X.shape[0], dtype=float)
@@ -151,9 +166,13 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
                 )
             if np.any(sample_weight < 0):
                 raise ValueError("sample_weight must be non-negative.")
+        if not np.all(np.isfinite(sample_weight)):
+            raise ValueError("sample_weight must contain only finite values.")
+        if np.sum(sample_weight) <= 0:
+            raise ValueError("sample_weight must have a positive total weight.")
 
         self.scaler_ = StandardScaler()
-        X_scaled = self.scaler_.fit_transform(X)
+        X_scaled = self.scaler_.fit_transform(X, sample_weight=sample_weight)
         self.y_mean_, self.y_scale_ = _weighted_mean_std(y, sample_weight)
         y_scaled = (y - self.y_mean_) / self.y_scale_
 
@@ -186,9 +205,7 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X):
         check_is_fitted(self, ["scaler_", "coef_input_", "coef_output_", "y_mean_", "y_scale_"])
-        X = np.asarray(X, dtype=float)
-        if X.ndim == 1:
-            X = X.reshape(1, -1)
+        X = check_array(X, dtype=float)
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
                 f"X has {X.shape[1]} features, but model was trained with "
@@ -217,8 +234,8 @@ def make_shallow_nn_pool(
     """
     if not hidden_layer_sizes:
         raise ValueError("hidden_layer_sizes must contain at least one size.")
-    if any(size < 1 for size in hidden_layer_sizes):
-        raise ValueError("Each hidden layer size must be >= 1.")
+    if any(not isinstance(size, Integral) or size < 1 for size in hidden_layer_sizes):
+        raise ValueError("Each hidden layer size must be an integer >= 1.")
 
     base_learners_ = []
     for idx, hidden_layer_size in enumerate(hidden_layer_sizes):

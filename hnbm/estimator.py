@@ -1,4 +1,5 @@
 import numpy as np
+from inspect import Parameter, signature
 from tqdm import tqdm
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin, clone
 from sklearn.exceptions import NotFittedError
@@ -132,6 +133,45 @@ class HNBM(BaseEstimator):
                 "This HNBM instance is not fitted yet. Call 'fit' with appropriate arguments."
             )
 
+    def _validate_learner_pool(self):
+        """Validate learner selection and weighted-fit compatibility."""
+        if not self.base_learners_:
+            raise ValueError(
+                "No base learners configured. Subclass HNBM and set base_learners_ "
+                "and probabilities_ before calling fit."
+            )
+        if len(self.base_learners_) != len(self.probabilities_):
+            raise ValueError(
+                "base_learners_ and probabilities_ must have the same length."
+            )
+
+        probabilities = np.asarray(self.probabilities_, dtype=float)
+        if probabilities.ndim != 1 or not np.all(np.isfinite(probabilities)):
+            raise ValueError("probabilities_ must contain finite numeric values.")
+        if np.any(probabilities < 0):
+            raise ValueError("probabilities_ must be non-negative.")
+        if not np.isclose(probabilities.sum(), 1.0):
+            raise ValueError("probabilities_ must sum to 1.")
+
+        for learner in self.base_learners_:
+            if not hasattr(learner, "fit") or not hasattr(learner, "predict"):
+                raise TypeError("Each base learner must implement fit and predict.")
+            clone(learner)
+            try:
+                fit_parameters = signature(learner.fit).parameters.values()
+            except (TypeError, ValueError):
+                continue
+            accepts_weights = any(
+                parameter.name == "sample_weight"
+                or parameter.kind == Parameter.VAR_KEYWORD
+                for parameter in fit_parameters
+            )
+            if not accepts_weights:
+                raise TypeError(
+                    f"Base learner {type(learner).__name__} must accept sample_weight "
+                    "in fit()."
+                )
+
     def set_params(self, **params):
         result = super().set_params(**params)
         if params:
@@ -165,13 +205,10 @@ class HNBM(BaseEstimator):
         -------
         self
         """
-        if not self.base_learners_:
-            raise ValueError(
-                "No base learners configured. Subclass HNBM and set base_learners_ "
-                "and probabilities_ before calling fit."
-            )
+        self._validate_learner_pool()
 
         X, y = _validate_X_y(X, y)
+        self.n_features_in_ = X.shape[1]
         if self.mode == "classification":
             y = _normalize_classification_labels(y)
             self.classes_ = np.array([0, 1])
@@ -211,6 +248,11 @@ class HNBM(BaseEstimator):
         """Return raw model output (logits for classification, values for regression)."""
         self._check_fitted()
         X = _validate_X(X)
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X has {X.shape[1]} features, but model was trained with "
+                f"{self.n_features_in_} features."
+            )
         preds = np.zeros(X.shape[0])
         for learner in self.ensemble_:
             preds += self.learning_rate * learner.predict(X)

@@ -265,7 +265,7 @@ model.fit(X_train, y_train)
 | `max_iter` | `int` | `200` | Maximum training epochs per base network |
 | `tol` | `float` | `1e-5` | Early-stopping tolerance on training loss |
 | `random_state` | `int` or `None` | `None` | Seed for learner selection and weight init |
-| `verbose` | `bool` | `True` | Show tqdm progress bar |
+| `verbose` | `bool` | `False` | Show tqdm progress bar |
 
 ### Shared (`HNBMClassifier` / `HNBMRegressor`)
 
@@ -296,8 +296,8 @@ docker run --rm hnbm
 ```bash
 git clone https://github.com/qiancapital-dev/hnbm.git
 cd hnbm
-pip install -r requirements.txt
-pip install -e .
+pip install -e ".[test]"
+pytest
 ```
 
 ---
