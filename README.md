@@ -1,5 +1,6 @@
 # HNBM - Heterogeneous Newton Boosting Machine
 
+[![PyPI version](https://img.shields.io/pypi/v/hnbm.svg)](https://pypi.org/project/hnbm/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-compatible-blue.svg)](https://scikit-learn.org/)
 
