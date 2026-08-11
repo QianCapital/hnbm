@@ -15,4 +15,4 @@ __all__ = [
     "ShallowNNRegressor",
     "make_shallow_nn_pool",
 ]
-__version__ = "0.2.1"
+__version__ = "0.2.2"

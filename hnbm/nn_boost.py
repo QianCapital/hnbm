@@ -1,4 +1,7 @@
-from numbers import Integral
+from numbers import Integral, Real
+from collections.abc import Sequence
+
+import numpy as np
 
 from .estimator import HNBM, HNBMClassifier, HNBMRegressor
 from .nn_learner import make_shallow_nn_pool
@@ -33,29 +36,72 @@ class _NNBoostMixin:
         self.max_iter = max_iter
         self.tol = tol
 
-    def _validate_nn_boost_params(self):
-        if not self.hidden_layer_sizes:
+    def _validate_nn_boost_params(self, overrides=None):
+        overrides = {} if overrides is None else overrides
+        hidden_layer_sizes = overrides.get(
+            "hidden_layer_sizes", self.hidden_layer_sizes
+        )
+        activation = overrides.get("activation", self.activation)
+        alpha = overrides.get("alpha", self.alpha)
+        learning_rate_nn = overrides.get(
+            "learning_rate_nn", self.learning_rate_nn
+        )
+        max_iter = overrides.get("max_iter", self.max_iter)
+        tol = overrides.get("tol", self.tol)
+
+        if (
+            isinstance(hidden_layer_sizes, (str, bytes))
+            or not isinstance(hidden_layer_sizes, (Sequence, np.ndarray))
+            or np.ndim(hidden_layer_sizes) != 1
+        ):
+            raise ValueError(
+                "hidden_layer_sizes must be a nonempty sequence of positive "
+                "integers."
+            )
+        if len(hidden_layer_sizes) == 0:
             raise ValueError("hidden_layer_sizes must contain at least one size.")
         if any(
-            not isinstance(size, Integral) or size < 1
-            for size in self.hidden_layer_sizes
+            isinstance(size, (bool, np.bool_))
+            or not isinstance(size, Integral)
+            or size < 1
+            for size in hidden_layer_sizes
         ):
             raise ValueError("Each hidden layer size must be an integer >= 1.")
-        if self.activation not in ("relu", "tanh", "logistic"):
+        if activation not in ("relu", "tanh", "logistic"):
             raise ValueError(
                 "activation must be 'relu', 'tanh', or 'logistic', "
-                f"got {self.activation!r}."
+                f"got {activation!r}."
             )
-        if self.alpha < 0:
-            raise ValueError(f"alpha must be >= 0, got {self.alpha}.")
-        if self.learning_rate_nn <= 0:
+        if (
+            isinstance(alpha, (bool, np.bool_))
+            or not isinstance(alpha, Real)
+            or not np.isfinite(alpha)
+            or alpha < 0
+        ):
+            raise ValueError(f"alpha must be a finite number >= 0, got {alpha}.")
+        if (
+            isinstance(learning_rate_nn, (bool, np.bool_))
+            or not isinstance(learning_rate_nn, Real)
+            or not np.isfinite(learning_rate_nn)
+            or learning_rate_nn <= 0
+        ):
             raise ValueError(
-                f"learning_rate_nn must be > 0, got {self.learning_rate_nn}."
+                "learning_rate_nn must be a finite number > 0, "
+                f"got {learning_rate_nn}."
             )
-        if self.max_iter < 1:
-            raise ValueError(f"max_iter must be >= 1, got {self.max_iter}.")
-        if self.tol < 0:
-            raise ValueError(f"tol must be >= 0, got {self.tol}.")
+        if (
+            isinstance(max_iter, (bool, np.bool_))
+            or not isinstance(max_iter, Integral)
+            or max_iter < 1
+        ):
+            raise ValueError(f"max_iter must be an integer >= 1, got {max_iter}.")
+        if (
+            isinstance(tol, (bool, np.bool_))
+            or not isinstance(tol, Real)
+            or not np.isfinite(tol)
+            or tol < 0
+        ):
+            raise ValueError(f"tol must be a finite number >= 0, got {tol}.")
 
     def _build_base_learners(self):
         self.base_learners_, self.probabilities_ = make_shallow_nn_pool(
@@ -70,11 +116,16 @@ class _NNBoostMixin:
 
     def _set_nn_boost_params(self, **params):
         rebuild = bool(self._REBUILD_PARAMS.intersection(params))
+        self._validate_nn_boost_params(params)
         result = super().set_params(**params)
         if rebuild:
-            self._validate_nn_boost_params()
             self._build_base_learners()
         return result
+
+    def fit(self, X, y):
+        self._validate_nn_boost_params()
+        self._build_base_learners()
+        return super().fit(X, y)
 
 
 class NNBoost(_NNBoostMixin, HNBM):
@@ -117,7 +168,6 @@ class NNBoost(_NNBoostMixin, HNBM):
             verbose=verbose,
         )
         self._validate_nn_boost_params()
-        self._build_base_learners()
 
     def set_params(self, **params):
         return self._set_nn_boost_params(**params)
@@ -176,7 +226,6 @@ class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
             verbose=verbose,
         )
         self._validate_nn_boost_params()
-        self._build_base_learners()
 
     def set_params(self, **params):
         if "mode" in params:
@@ -237,7 +286,6 @@ class NNBoostRegressor(_NNBoostMixin, HNBMRegressor):
             verbose=verbose,
         )
         self._validate_nn_boost_params()
-        self._build_base_learners()
 
     def set_params(self, **params):
         if "mode" in params:

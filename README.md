@@ -7,7 +7,7 @@
 
 Unlike standard gradient boosting libraries that use a single learner type (typically decision trees), HNBM lets you define a pool of base learners with selection probabilities. At each boosting round, a learner is drawn from that pool and fit to the Newton step (gradient divided by Hessian, weighted by the Hessian).
 
-Built-in support includes **shallow neural network** base learners via `NNBoostClassifier` / `NNBoostRegressor`, or you can plug in any scikit-learn-compatible regressor (decision trees, kernel ridge, etc.) by subclassing.
+Built-in support includes **shallow neural network** base learners via `NNBoostClassifier` / `NNBoostRegressor`. You can also plug in a cloneable scikit-learn regressor whose `fit` method explicitly accepts `sample_weight` (for example, decision trees or kernel ridge) by subclassing.
 
 This is the core framework behind [SnapBoost](https://github.com/qiancapital/snapboost), inspired by [SnapBoost: A Heterogeneous Boosting Machine](https://arxiv.org/abs/2006.09745) (Parnell et al., NeurIPS 2020).
 
@@ -206,18 +206,22 @@ class CustomNNBoost(HNBMClassifier):
 
 ### HNBMClassifier / HNBMRegressor
 
-The recommended entry points (similar to `XGBClassifier` / `XGBRegressor`). Subclass one of these and set `base_learners_` (list of unfitted sklearn regressors) and `probabilities_` (list summing to 1) before calling `fit`.
+The recommended entry points (similar to `XGBClassifier` / `XGBRegressor`). Subclass one of these and set `base_learners_` (a list of unfitted, cloneable regressors whose `fit` methods explicitly accept `sample_weight`) and `probabilities_` (a list of finite, nonnegative values summing to 1) before calling `fit`.
 
 **Methods**
 
 | Method | Classifier | Regressor | Description |
 |--------|------------|-----------|-------------|
 | `fit(X, y)` | ✓ | ✓ | Train the ensemble |
-| `predict(X)` | ✓ | ✓ | Class labels (0/1) or continuous values |
+| `predict(X)` | ✓ | ✓ | Original class labels or continuous values |
 | `predict_proba(X)` | ✓ | | Probabilities, shape `(n_samples, 2)` |
 | `decision_function(X)` | ✓ | | Raw logits |
 | `score(X, y)` | ✓ | ✓ | Accuracy or R² |
 | `evaluate(X, y)` | ✓ | ✓ | Prints and returns log loss or RMSE |
+
+After fitting, `n_iter_` contains the number of completed boosting rounds. The
+inner epoch count for each fitted neural-network learner remains available on
+that learner's own `n_iter_` attribute.
 
 ### HNBM
 
@@ -278,7 +282,7 @@ model.fit(X_train, y_train)
 
 The legacy `HNBM` class also accepts a `mode` parameter (`"classification"` or `"regression"`).
 
-**Label conventions (classification)**: accepts `0`/`1` or `-1`/`+1`. Predictions are returned as `0`/`1`.
+**Label conventions (classification)**: accepts any two distinct class labels. Predictions use the original labels, and probability columns follow `classes_` order.
 
 ---
 
@@ -293,12 +297,28 @@ docker run --rm hnbm
 
 ## Development
 
+Create an environment, install HNBM in editable mode with its test dependencies,
+and run the complete validation suite:
+
 ```bash
 git clone https://github.com/qiancapital-dev/hnbm.git
 cd hnbm
-pip install -e ".[test]"
-pytest
+python -m pip install -e ".[test]"
+python -m pytest -q
+python -m compileall -q hnbm tests
 ```
+
+The pytest command must finish with all tests passing. To run an individual
+test module or a single test while developing:
+
+```bash
+python -m pytest -q tests/test_hnbm.py
+python -m pytest -q tests/test_nn_learner.py
+python -m pytest -q tests/test_hnbm.py::test_classifier_preserves_arbitrary_binary_labels
+```
+
+CI runs the full test suite on every push and pull request, and again before a
+release distribution is built.
 
 ---
 
