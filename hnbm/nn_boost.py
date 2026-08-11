@@ -122,10 +122,21 @@ class _NNBoostMixin:
             self._build_base_learners()
         return result
 
-    def fit(self, X, y):
+    def fit(
+        self, X, y, sample_weight=None, eval_set=None,
+        eval_metric=None, callbacks=None, candidate_n_jobs=1,
+    ):
         self._validate_nn_boost_params()
         self._build_base_learners()
-        return super().fit(X, y)
+        return super().fit(
+            X,
+            y,
+            sample_weight=sample_weight,
+            eval_set=eval_set,
+            eval_metric=eval_metric,
+            callbacks=callbacks,
+            candidate_n_jobs=candidate_n_jobs,
+        )
 
 
 class NNBoost(_NNBoostMixin, HNBM):
@@ -151,6 +162,13 @@ class NNBoost(_NNBoostMixin, HNBM):
         mode="classification",
         random_state=None,
         verbose=False,
+        selection_strategy="random",
+        line_search=False,
+        early_stopping_rounds=None,
+        min_delta=0.0,
+        subsample=1.0,
+        objective="auto",
+        objective_parameter=None,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -166,6 +184,13 @@ class NNBoost(_NNBoostMixin, HNBM):
             mode=mode,
             random_state=random_state,
             verbose=verbose,
+            selection_strategy=selection_strategy,
+            line_search=line_search,
+            early_stopping_rounds=early_stopping_rounds,
+            min_delta=min_delta,
+            subsample=subsample,
+            objective=objective,
+            objective_parameter=objective_parameter,
         )
         self._validate_nn_boost_params()
 
@@ -210,6 +235,13 @@ class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
         tol=1e-5,
         random_state=None,
         verbose=False,
+        selection_strategy="random",
+        line_search=False,
+        early_stopping_rounds=None,
+        min_delta=0.0,
+        subsample=1.0,
+        objective="auto",
+        objective_parameter=None,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -224,6 +256,13 @@ class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
             learning_rate=learning_rate,
             random_state=random_state,
             verbose=verbose,
+            selection_strategy=selection_strategy,
+            line_search=line_search,
+            early_stopping_rounds=early_stopping_rounds,
+            min_delta=min_delta,
+            subsample=subsample,
+            objective=objective,
+            objective_parameter=objective_parameter,
         )
         self._validate_nn_boost_params()
 
@@ -270,6 +309,13 @@ class NNBoostRegressor(_NNBoostMixin, HNBMRegressor):
         tol=1e-5,
         random_state=None,
         verbose=False,
+        selection_strategy="random",
+        line_search=False,
+        early_stopping_rounds=None,
+        min_delta=0.0,
+        subsample=1.0,
+        objective="auto",
+        objective_parameter=None,
     ):
         self._init_nn_boost_params(
             hidden_layer_sizes=hidden_layer_sizes,
@@ -284,6 +330,13 @@ class NNBoostRegressor(_NNBoostMixin, HNBMRegressor):
             learning_rate=learning_rate,
             random_state=random_state,
             verbose=verbose,
+            selection_strategy=selection_strategy,
+            line_search=line_search,
+            early_stopping_rounds=early_stopping_rounds,
+            min_delta=min_delta,
+            subsample=subsample,
+            objective=objective,
+            objective_parameter=objective_parameter,
         )
         self._validate_nn_boost_params()
 

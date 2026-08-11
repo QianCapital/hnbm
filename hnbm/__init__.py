@@ -1,5 +1,5 @@
 from .estimator import HNBM, HNBMClassifier, HNBMRegressor
-from .losses import Logistic, MeanSquaredError
+from .losses import Logistic, MeanSquaredError, PseudoHuber, Quantile
 from .nn_boost import NNBoost, NNBoostClassifier, NNBoostRegressor
 from .nn_learner import ShallowNNRegressor, make_shallow_nn_pool
 
@@ -9,10 +9,12 @@ __all__ = [
     "HNBMRegressor",
     "Logistic",
     "MeanSquaredError",
+    "PseudoHuber",
+    "Quantile",
     "NNBoost",
     "NNBoostClassifier",
     "NNBoostRegressor",
     "ShallowNNRegressor",
     "make_shallow_nn_pool",
 ]
-__version__ = "0.2.2"
+__version__ = "0.3.0"

@@ -11,6 +11,54 @@ Built-in support includes **shallow neural network** base learners via `NNBoostC
 
 This is the core framework behind [SnapBoost](https://github.com/qiancapital/snapboost), inspired by [SnapBoost: A Heterogeneous Boosting Machine](https://arxiv.org/abs/2006.09745) (Parnell et al., NeurIPS 2020).
 
+## New in 0.3.0: adaptive training
+
+HNBM 0.3.0 adds weighted training, optimized constant base scores, validation
+history, early stopping with best-ensemble restoration, deterministic row
+subsampling, greedy learner-family selection, and optional per-round line
+search. The original stochastic algorithm remains the default with
+`selection_strategy="random"`.
+
+```python
+model = NNBoostRegressor(
+    num_iterations=500,
+    learning_rate=0.05,
+    selection_strategy="greedy",
+    line_search=True,
+    subsample=0.8,
+    early_stopping_rounds=25,
+    random_state=42,
+)
+model.fit(
+    X_train,
+    y_train,
+    sample_weight=train_weights,
+    eval_set=(X_validation, y_validation),
+)
+print(model.best_iteration_, model.history_["validation_loss"])
+```
+
+Additional opt-in extensions include robust and quantile regression objectives,
+custom per-round metrics, callbacks, parallel greedy candidate fitting, and
+post-fit model compaction. None changes the default objective or training path.
+
+```python
+robust = NNBoostRegressor(
+    objective="pseudo_huber",
+    objective_parameter=2.0,
+    random_state=42,
+)
+robust.fit(
+    X_train,
+    y_train,
+    eval_metric=lambda y, raw: abs(y - raw).mean(),
+    callbacks=[lambda state: state["iteration"] >= 499],
+    candidate_n_jobs=2,
+)
+
+smaller = robust.compact(min_abs_weight=1e-8)
+```
+
 ---
 
 ## Table of Contents
@@ -44,7 +92,7 @@ pip install hnbm
 **From source**:
 
 ```bash
-git clone https://github.com/qiancapital-dev/hnbm.git
+git clone https://github.com/qiancapital/hnbm.git
 cd hnbm
 pip install .
 ```
@@ -212,7 +260,7 @@ The recommended entry points (similar to `XGBClassifier` / `XGBRegressor`). Subc
 
 | Method | Classifier | Regressor | Description |
 |--------|------------|-----------|-------------|
-| `fit(X, y)` | ✓ | ✓ | Train the ensemble |
+| `fit(X, y, sample_weight=None, eval_set=None, ...)` | ✓ | ✓ | Train with optional weights, validation, metrics, callbacks, and candidate parallelism |
 | `predict(X)` | ✓ | ✓ | Original class labels or continuous values |
 | `predict_proba(X)` | ✓ | | Probabilities, shape `(n_samples, 2)` |
 | `decision_function(X)` | ✓ | | Raw logits |
@@ -222,6 +270,11 @@ The recommended entry points (similar to `XGBClassifier` / `XGBRegressor`). Subc
 After fitting, `n_iter_` contains the number of completed boosting rounds. The
 inner epoch count for each fitted neural-network learner remains available on
 that learner's own `n_iter_` attribute.
+
+New fitted attributes in 0.3.0 include `base_score_`, `learner_weights_`,
+`history_`, and `best_iteration_`. Validation loss is recorded only when
+`eval_set=(X_validation, y_validation)` is supplied. Early stopping requires an
+evaluation set and restores the best ensemble before returning.
 
 ### HNBM
 
@@ -270,6 +323,13 @@ model.fit(X_train, y_train)
 | `tol` | `float` | `1e-5` | Early-stopping tolerance on training loss |
 | `random_state` | `int` or `None` | `None` | Seed for learner selection and weight init |
 | `verbose` | `bool` | `False` | Show tqdm progress bar |
+| `selection_strategy` | `{"random", "greedy"}` | `"random"` | Sample one family or fit all candidates and select the lowest-loss update |
+| `line_search` | `bool` | `False` | Select a contribution weight for each fitted learner |
+| `subsample` | `float` | `1.0` | Fraction of rows used to fit each base learner |
+| `early_stopping_rounds` | positive `int` or `None` | `None` | Validation rounds without improvement before stopping |
+| `min_delta` | `float` | `0.0` | Minimum validation-loss improvement that resets patience |
+| `objective` | `str` | `"auto"` | `"squared_error"`, `"pseudo_huber"`, or `"quantile"` for regression; `"log_loss"` for classification |
+| `objective_parameter` | `float` or `None` | `None` | Pseudo-Huber delta or quantile level |
 
 ### Shared (`HNBMClassifier` / `HNBMRegressor`)
 
@@ -279,6 +339,11 @@ model.fit(X_train, y_train)
 | `learning_rate` | `float` | `0.1` | Shrinkage per learner |
 | `random_state` | `int` or `None` | `None` | Seed for learner selection |
 | `verbose` | `bool` | `True` | Show tqdm progress bar |
+| `selection_strategy` | `{"random", "greedy"}` | `"random"` | Learner-family selection policy |
+| `line_search` | `bool` | `False` | Select a contribution weight for each round |
+| `subsample` | `float` | `1.0` | Fraction of training rows per learner |
+| `early_stopping_rounds` | positive `int` or `None` | `None` | Validation patience |
+| `min_delta` | `float` | `0.0` | Minimum validation improvement |
 
 The legacy `HNBM` class also accepts a `mode` parameter (`"classification"` or `"regression"`).
 
@@ -301,7 +366,7 @@ Create an environment, install HNBM in editable mode with its test dependencies,
 and run the complete validation suite:
 
 ```bash
-git clone https://github.com/qiancapital-dev/hnbm.git
+git clone https://github.com/qiancapital/hnbm.git
 cd hnbm
 python -m pip install -e ".[test]"
 python -m pytest -q
