@@ -64,6 +64,7 @@ smaller = robust.compact(min_abs_weight=1e-8)
 
 ## Table of Contents
 
+- [Mathematical Overview](#mathematical-overview)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
   - [Neural networks (NNBoost)](#neural-networks-nnboost)
@@ -79,6 +80,86 @@ smaller = robust.compact(min_abs_weight=1e-8)
 - [Development](#development)
 - [Related projects](#related-projects)
 - [License](#license)
+
+---
+
+## Mathematical Overview
+
+HNBM constructs an additive predictor from a probability-weighted pool of
+possibly different hypothesis classes:
+
+$$
+F_M(x)=F_0+\sum_{m=1}^{M}\eta_m f_m(x),
+\qquad f_m\in\mathcal H_{K_m},
+\qquad K_m\sim\operatorname{Categorical}(p_1,\ldots,p_K).
+$$
+
+Here $F_0$ is a constant initial score, $\eta_m$ is a boosting step size, and
+$\mathcal H_{K_m}$ may contain trees, kernels, neural networks, linear models,
+or any cloneable weighted regressor. The probabilities satisfy
+$p_k\geq0$ and $\sum_kp_k=1$.
+
+At boosting round $m$, HNBM differentiates the loss at the current raw
+prediction:
+
+$$
+g_i=\left.\frac{\partial\ell(y_i,F)}{\partial F}\right|_{F=F_{m-1}(x_i)},
+\qquad
+h_i=\left.\frac{\partial^2\ell(y_i,F)}{\partial F^2}\right|_{F=F_{m-1}(x_i)}.
+$$
+
+Completing the square in the second-order Taylor approximation shows that the
+chosen learner should solve the weighted regression problem
+
+$$
+r_i=-\frac{g_i}{h_i},
+\qquad
+f_m\approx\arg\min_{f\in\mathcal H_{K_m}}
+\sum_{i=1}^{n}w_i h_i\bigl(r_i-f(x_i)\bigr)^2,
+$$
+
+followed by
+
+$$
+F_m(x)=F_{m-1}(x)+\eta_m f_m(x).
+$$
+
+Thus $-g_i/h_i$ is the Newton working response and $w_i h_i$ is its effective
+sample weight. For squared-error regression, $g_i=2(F-y_i)$ and $h_i=2$, so
+$r_i=y_i-F$: ordinary residual boosting is recovered. For binary logistic
+classification with $y_i\in\{-1,+1\}$,
+
+$$
+\ell(y,F)=\log(1+e^{-yF}),\quad
+g=-y\sigma(-yF),\quad
+h=\sigma(yF)\sigma(-yF),
+$$
+
+and $P(y=+1\mid x)=\sigma(F_M(x))$.
+
+The included NNBoost realization uses a uniform pool of one-hidden-layer
+networks. For hidden width $q$ its correction is
+
+$$
+f(x)=v^\top a(W^\top\widetilde x+b)+c,
+$$
+
+and the network is trained against the Newton responses using Hessian weights
+and L2 regularization. Different widths define different subclasses
+$\mathcal H_q$; the default random strategy samples one width per round, while
+the optional greedy strategy fits every eligible width and keeps the update
+with the lowest loss.
+
+Traditional gradient boosting fits $-g_i$ and usually uses a single learner
+class. XGBoost uses a related Newton expansion but specializes it to
+regularized trees with analytic leaf weights and split gains. HNBM separates
+the Newton optimization interface from the learner type, allowing different
+inductive biases to coexist in one ensemble.
+
+See [MATH.md](MATH.md) for the complete derivation, objective formulas,
+stochastic and greedy HNBM algorithms, NNBoost training equations, convergence
+interpretation, and detailed comparisons with gradient boosting, Newton tree
+boosting, SnapBoost, and XGBoost.
 
 ---
 
