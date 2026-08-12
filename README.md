@@ -91,7 +91,7 @@ possibly different hypothesis classes:
 $$
 F_M(x)=F_0+\sum_{m=1}^{M}\eta_m f_m(x),
 \qquad f_m\in\mathcal H_{K_m},
-\qquad K_m\sim\operatorname{Categorical}(p_1,\ldots,p_K).
+\qquad K_m\sim\mathrm{Categorical}(p_1,\ldots,p_K).
 $$
 
 Here $F_0$ is a constant initial score, $\eta_m$ is a boosting step size, and

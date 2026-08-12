@@ -32,7 +32,7 @@ $$
 Unlike a homogeneous booster, HNBM has a pool of hypothesis subclasses
 
 $$
-\mathbb H=\{\mathcal H_1,\ldots,\mathcal H_K\}
+\mathbb{H}=\{\mathcal H_1,\ldots,\mathcal H_K\}
 $$
 
 and a probability vector
@@ -208,7 +208,7 @@ $$
 The Hessian is floored at machine epsilon for numerical stability. If
 
 $$
-\widehat p=\frac{\sum_iw_i\mathbf1[y_i=+1]}{\sum_iw_i},
+\widehat p=\frac{\sum_iw_i\mathbf{1}_{\{y_i=+1\}}}{\sum_iw_i},
 $$
 
 the initial raw score is the clipped empirical log-odds
@@ -274,7 +274,7 @@ score is the weighted empirical $\tau$-quantile.
 The default algorithm samples
 
 $$
-K_m\sim\operatorname{Categorical}(p_1,\ldots,p_K),
+K_m\sim\mathrm{Categorical}(p_1,\ldots,p_K),
 \tag{14}
 $$
 
@@ -341,7 +341,7 @@ NNBoost is the ready-to-use HNBM realization included in this package. Its
 subclasses differ by hidden width:
 
 $$
-\mathbb H=\{\mathcal H_{q_1},\ldots,\mathcal H_{q_K}\},
+\mathbb{H}=\{\mathcal H_{q_1},\ldots,\mathcal H_{q_K}\},
 $$
 
 where the default widths are $(16,32,64)$ and
@@ -354,7 +354,7 @@ $$
 ### 6.1 Network function
 
 Inputs are standardized using effective sample weights. For standardized
-$\widetilde x\in\mathbb R^d$, a width-$q$ learner predicts a standardized
+$\widetilde x\in\mathbb{R}^d$, a width-$q$ learner predicts a standardized
 working response with
 
 $$
@@ -365,9 +365,9 @@ $$
 
 where
 
-- $W\in\mathbb R^{d\times q}$ and $b\in\mathbb R^q$ are hidden-layer
+- $W\in\mathbb{R}^{d\times q}$ and $b\in\mathbb{R}^q$ are hidden-layer
   parameters;
-- $v\in\mathbb R^q$ and $c\in\mathbb R$ are output parameters; and
+- $v\in\mathbb{R}^q$ and $c\in\mathbb{R}$ are output parameters; and
 - $a$ is ReLU, tanh, or logistic activation.
 
 The Newton responses are also standardized using their effective weighted mean
@@ -538,7 +538,7 @@ $$
 and the canonical gain from splitting a parent into left and right children is
 
 $$
-\operatorname{Gain}=\frac12\left[
+\mathrm{Gain}=\frac12\left[
 \frac{G_L^2}{H_L+\lambda}
 +\frac{G_R^2}{H_R+\lambda}
 -\frac{(G_L+G_R)^2}{H_L+H_R+\lambda}
@@ -593,7 +593,7 @@ Under strong-convexity, smoothness, and weak-learning assumptions, a positive
 expected capture
 
 $$
-\mathbb E_{K\sim p}[\rho_K(r)]
+\mathbb{E}_{K\sim p}[\rho_K(r)]
 =\sum_kp_k\rho_k(r)>0
 $$
 
@@ -623,7 +623,7 @@ HNBM exposes regularization at several levels:
 For random selection, expected fitting cost per round is approximately
 
 $$
-\mathbb E[C]=\sum_{k=1}^{K}p_k C_k,
+\mathbb{E}[C]=\sum_{k=1}^{K}p_k C_k,
 $$
 
 where $C_k$ is the cost of fitting class $k$. Greedy selection instead costs
