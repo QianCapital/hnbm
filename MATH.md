@@ -18,15 +18,13 @@ and define empirical risk
 
 $$
 \mathcal R(F)=\sum_{i=1}^{n}w_i\ell(y_i,F(x_i)).
-\tag{1}
 $$
 
-The goal is to learn a function $F$ that minimizes (1). HNBM represents it as
-an additive ensemble
+The goal is to learn a function $F$ that minimizes this empirical risk. HNBM
+represents it as an additive ensemble
 
 $$
 F_M(x)=F_0+\sum_{m=1}^{M}\eta_m f_m(x).
-\tag{2}
 $$
 
 Unlike a homogeneous booster, HNBM has a pool of hypothesis subclasses
@@ -41,7 +39,6 @@ $$
 p=(p_1,\ldots,p_K),
 \qquad p_k\geq0,
 \qquad \sum_{k=1}^{K}p_k=1.
-\tag{3}
 $$
 
 A subclass might contain trees of a given depth, networks of a given width,
@@ -85,7 +82,6 @@ score $F_{m-1}(x_i)$:
 $$
 \ell(y_i,F_{m-1}(x_i)+q_i)
 \approx\ell_i+g_iq_i+\frac12h_iq_i^2,
-\tag{4}
 $$
 
 where
@@ -101,7 +97,6 @@ $$
 g_iq_i+\frac12h_iq_i^2
 =\frac12h_i\left(q_i+\frac{g_i}{h_i}\right)^2
 -\frac{g_i^2}{2h_i}.
-\tag{5}
 $$
 
 The final term is independent of $q_i$. Minimizing the quadratic surrogate
@@ -112,11 +107,10 @@ f_{m,k}\in\arg\min_{f\in\mathcal H_k}
 \sum_{i=1}^{n}w_i h_i\left(r_i-f(x_i)\right)^2,
 \qquad
 r_i=-\frac{g_i}{h_i}.
-\tag{6}
 $$
 
-Equation (6) is HNBM's common interface between optimization and arbitrary base
-learners:
+This weighted least-squares problem is HNBM's common interface between
+optimization and arbitrary base learners:
 
 - $r_i=-g_i/h_i$ is the Newton working response;
 - $\widetilde w_i=w_i h_i$ is the effective fitting weight; and
@@ -133,7 +127,6 @@ After fitting a learner, the ensemble becomes
 
 $$
 F_m(x)=F_{m-1}(x)+\eta_mf_m(x).
-\tag{7}
 $$
 
 The default uses fixed shrinkage $\eta_m=\eta$. With `line_search=True`, this
@@ -141,19 +134,18 @@ implementation evaluates
 
 $$
 \eta_m\in\eta\{0.25,0.5,1,1.5,2\}
-\tag{8}
 $$
 
-and chooses the value with the smallest current training loss. Equation (8)
-is a finite grid search rather than an exact continuous line search.
+and chooses the value with the smallest current training loss. This is a
+finite grid search rather than an exact continuous line search.
 
 ### 3.3 Why both response and weight are needed
 
 It may appear sufficient to fit $-g_i/h_i$ without weights, but that would not
 minimize the Taylor surrogate. Observations with larger curvature have greater
-effect on local objective change, which is exactly represented by $h_i$ in
-(6). Multiplying by the original observation weight gives $w_i h_i$ without
-changing the pointwise Newton target.
+effect on local objective change, which is exactly represented by $h_i$ in the
+weighted regression objective. Multiplying by the original observation weight
+gives $w_i h_i$ without changing the pointwise Newton target.
 
 ## 4. Objectives in this implementation
 
@@ -178,7 +170,6 @@ is constant. The initial score is the weighted mean
 
 $$
 F_0=\frac{\sum_iw_i y_i}{\sum_iw_i}.
-\tag{9}
 $$
 
 ### 4.2 Binary logistic classification
@@ -196,7 +187,6 @@ $$
 g=-ya,
 \qquad
 h=a(1-a)=\sigma(-yF)\sigma(yF),
-\tag{10}
 $$
 
 and
@@ -215,7 +205,6 @@ the initial raw score is the clipped empirical log-odds
 
 $$
 F_0=\log\frac{\widehat p}{1-\widehat p}.
-\tag{11}
 $$
 
 The positive-class probability is
@@ -237,7 +226,6 @@ $$
 g=\frac{e}{\sqrt{1+(e/\delta)^2}},
 \qquad
 h=\left(1+(e/\delta)^2\right)^{-3/2}.
-\tag{12}
 $$
 
 Large residuals have low curvature and therefore low effective fitting weight,
@@ -255,12 +243,12 @@ $$
 Because pinball loss is not twice differentiable, this implementation uses
 
 $$
-g=\begin{cases}
-1-\tau,&F\geq y,\\
--\tau,&F<y,
-\end{cases}
-\qquad h=1
-\tag{13}
+g=1-\tau, \qquad F\geq y,
+$$
+
+$$
+g=-\tau, \qquad F<y,
+\qquad h=1.
 $$
 
 as a unit-Hessian working approximation. Thus the shared fitting mechanism is
@@ -275,7 +263,6 @@ The default algorithm samples
 
 $$
 K_m\sim\mathrm{Categorical}(p_1,\ldots,p_K),
-\tag{14}
 $$
 
 then fits only
@@ -284,8 +271,9 @@ $$
 f_m=f_{m,K_m}
 $$
 
-using (6). Random subclass selection reduces per-round work when learners are
-expensive and diversifies the sequence of functional corrections. The
+using the Newton weighted-regression objective. Random subclass selection
+reduces per-round work when learners are expensive and diversifies the sequence
+of functional corrections. The
 probabilities encode how frequently each inductive bias receives an
 opportunity to approximate the Newton direction.
 
@@ -302,7 +290,6 @@ $$
 (k_m,\eta_m)\in\arg\min_{k,\eta_k}
 \sum_iw_i\ell\left(y_i,
 F_{m-1}(x_i)+\eta_k f_{m,k}(x_i)\right).
-\tag{15}
 $$
 
 Candidate fitting may run in parallel. In this mode, probabilities determine
@@ -348,7 +335,6 @@ where the default widths are $(16,32,64)$ and
 
 $$
 p_k=\frac1K.
-\tag{16}
 $$
 
 ### 6.1 Network function
@@ -360,7 +346,6 @@ working response with
 $$
 \widetilde f_\theta(x)
 =v^\top a(W^\top\widetilde x+b)+c,
-\tag{17}
 $$
 
 where
@@ -381,7 +366,6 @@ After training, the correction returned to HNBM is
 
 $$
 f_\theta(x)=s_r\widetilde f_\theta(x)+\mu_r.
-\tag{18}
 $$
 
 ### 6.2 Base-network objective
@@ -394,7 +378,6 @@ J(\theta)=
 \left(\widetilde f_\theta(x_i)-\widetilde r_i\right)^2}
 {\sum_i\widetilde w_i}
 +\alpha\left(\lVert W\rVert_F^2+\lVert v\rVert_2^2\right).
-\tag{19}
 $$
 
 Bias terms are not penalized. The learner applies full-batch gradient descent
@@ -410,7 +393,6 @@ $$
 \nabla_vJ=\sum_i\frac{2\widetilde w_i e_i}{S}z_i+2\alpha v,
 \qquad
 \frac{\partial J}{\partial c}=\sum_i\frac{2\widetilde w_i e_i}{S},
-\tag{20}
 $$
 
 where $z_i=a(W^\top\widetilde x_i+b)$. Backpropagation propagates
@@ -445,12 +427,14 @@ The implementation can be summarized as follows:
 2. For $m=1,\ldots,M$:
    1. Compute $g_i$ and $h_i$ at $F_{m-1}(x_i)$.
    2. Form $r_i=-g_i/h_i$ and $\widetilde w_i=w_i h_i$.
-   3. Sample $K_m$ using (14), or fit all eligible candidates for (15).
+   3. Sample $K_m$ from the configured categorical distribution, or fit all
+      eligible candidates and compare their updated losses.
    4. Optionally subsample positive-weight observations.
    5. Fit the selected cloneable regressor to $r_i$ with weights
       $\widetilde w_i$.
-   6. Use fixed shrinkage or choose $\eta_m$ from (8).
-   7. Update $F_m$ with (7), record losses and metrics, and invoke callbacks.
+   6. Use fixed shrinkage or choose $\eta_m$ from the discrete line-search grid.
+   7. Add the scaled learner to $F_{m-1}$, record losses and metrics, and invoke
+      callbacks.
 3. Optionally restore the best validation ensemble.
 
 Prediction uses exactly
@@ -502,8 +486,8 @@ projects the Newton direction using a different inductive bias.
 SnapBoost is a concrete HNBM whose pool combines tree subclasses and random-
 Fourier-feature ridge subclasses, with an optional raw linear learner. NNBoost
 instead uses shallow-network widths as its subclasses. In both cases, the
-outer algorithm is equations (6), (7), and (14); only the learner pool and its
-probability allocation differ.
+outer algorithm is the same Newton regression, learner-selection, and additive
+update procedure; only the learner pool and its probability allocation differ.
 
 ## 9. Detailed comparison with XGBoost
 
@@ -532,7 +516,6 @@ The optimal XGBoost leaf value is
 
 $$
 c_j^*=-\frac{G_j}{H_j+\lambda},
-\tag{21}
 $$
 
 and the canonical gain from splitting a parent into left and right children is
@@ -543,7 +526,6 @@ $$
 +\frac{G_R^2}{H_R+\lambda}
 -\frac{(G_L+G_R)^2}{H_L+H_R+\lambda}
 \right]-\gamma_T.
-\tag{22}
 $$
 
 The shared second-order foundation is clear, but the minimization strategy is
@@ -555,20 +537,21 @@ different:
 | Learner class | Any configured weighted-regressor pool | Regularized regression trees |
 | Per-round choice | Random subclass by default; optional greedy selection | Greedy or approximate split search within the tree class |
 | Regularization | Supplied by each learner plus shrinkage, sampling, and early stopping | Explicit leaf and structure penalties plus tree constraints |
-| Leaf formula | Depends on the configured tree estimator | Analytic regularized value (21) |
+| Leaf formula | Depends on the configured tree estimator | Analytic regularized value $-G_j/(H_j+\lambda)$ |
 | Neural corrections | Supported through NNBoost | Not part of the standard tree booster |
 | Heterogeneity | Different classes can coexist in one ensemble | Standard booster repeatedly uses trees |
 
-For a fixed unregularized tree partition, solving (6) gives
+For a fixed unregularized tree partition, the weighted Newton regression gives
 
 $$
 c_j=-\frac{\sum_{i\in R_j}w_i g_i}
 {\sum_{i\in R_j}w_i h_i},
 $$
 
-which is the weighted $\lambda=0$ analogue of (21). XGBoost incorporates the
-regularizer directly in leaf optimization and split scoring. HNBM delegates
-regularization and function fitting to whichever learner was selected.
+which is the weighted $\lambda=0$ analogue of XGBoost's regularized leaf
+formula. XGBoost incorporates the regularizer directly in leaf optimization
+and split scoring. HNBM delegates regularization and function fitting to
+whichever learner was selected.
 
 ## 10. Convergence interpretation
 
@@ -639,9 +622,9 @@ HNBM implementation:
   `sample_weight`.
 - Classification is binary and uses logistic loss.
 - Regression supports squared error, pseudo-Huber, and quantile objectives;
-  quantile uses the unit-Hessian approximation in (13).
+  quantile uses the unit-Hessian approximation described above.
 - Random learner selection is the default; greedy selection and the discrete
-  line search in (8) are optional.
+  line-search grid are optional.
 - NNBoost's default pool contains widths 16, 32, and 64 with equal probability.
 - Each fitted neural learner standardizes features and working targets using
   effective weights, then optimizes weighted MSE by full-batch gradient descent.
