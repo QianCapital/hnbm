@@ -231,7 +231,7 @@ def test_nnboost_exposes_adaptive_parameters_to_clone():
 
 
 def test_package_exposes_staged_version():
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
 
 
 @pytest.mark.parametrize(
@@ -537,3 +537,69 @@ def test_fresh_estimator_is_not_generically_fitted():
 
     with pytest.raises(NotFittedError):
         check_is_fitted(NNBoostClassifier())
+
+
+def _regression_frame(n_features=4):
+    pd = pytest.importorskip("pandas")
+    X, y = make_regression(n_samples=60, n_features=n_features, random_state=11)
+    columns = [f"f{index}" for index in range(n_features)]
+    return pd.DataFrame(X, columns=columns), y
+
+
+def test_feature_names_recorded_when_fitting_a_dataframe():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11).fit(frame, y)
+
+    assert list(model.feature_names_in_) == list(frame.columns)
+
+
+def test_feature_names_absent_when_fitting_an_array():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11).fit(frame.to_numpy(), y)
+
+    assert not hasattr(model, "feature_names_in_")
+
+
+def test_reordered_columns_are_rejected():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11).fit(frame, y)
+
+    with pytest.raises(ValueError, match="same order"):
+        model.predict(frame[list(reversed(frame.columns))])
+
+
+def test_renamed_columns_report_the_difference():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11).fit(frame, y)
+    renamed = frame.rename(columns={"f0": "elsewhere"})
+
+    with pytest.raises(ValueError, match="unseen at fit time"):
+        model.predict(renamed)
+
+
+def test_mixing_named_and_unnamed_inputs_warns():
+    frame, y = _regression_frame()
+    named = TreeBoostRegressor(random_state=11).fit(frame, y)
+    unnamed = TreeBoostRegressor(random_state=11).fit(frame.to_numpy(), y)
+
+    with pytest.warns(UserWarning, match="does not have valid feature names"):
+        named.predict(frame.to_numpy())
+    with pytest.warns(UserWarning, match="fitted without feature names"):
+        unnamed.predict(frame)
+
+
+def test_eval_set_feature_names_must_match_training_data():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11)
+
+    with pytest.raises(ValueError, match="eval_set feature names"):
+        model.fit(frame, y, eval_set=(frame.rename(columns={"f0": "other"}), y))
+
+
+def test_set_params_clears_recorded_feature_names():
+    frame, y = _regression_frame()
+    model = TreeBoostRegressor(random_state=11).fit(frame, y)
+
+    model.set_params(num_iterations=3)
+
+    assert not hasattr(model, "feature_names_in_")

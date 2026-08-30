@@ -1,8 +1,23 @@
 # Changelog
 
-## 0.3.0
+## 0.3.1
 
 Release date: staged
+
+- Record `feature_names_in_` and reject dataframes whose columns are reordered
+  or renamed between fit and predict.
+- Require `eval_set` feature names to match the training data.
+
+### Compatibility
+
+- Predicting on a dataframe whose columns are reordered or renamed relative to
+  fit now raises `ValueError` instead of silently returning wrong values.
+  Mixing dataframe and array inputs across fit and predict warns.
+- Estimators fitted on arrays are unaffected.
+
+## 0.3.0
+
+Release date: 2026-08-11
 
 - Add optimized regression and classification base scores.
 - Add top-level sample weights and validation sets.

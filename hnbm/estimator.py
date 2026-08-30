@@ -1,5 +1,6 @@
 import numpy as np
 import copy
+import warnings
 from numbers import Integral, Real
 
 from tqdm import tqdm
@@ -39,6 +40,47 @@ def _validate_X_y(X, y):
     return X, y
 
 
+def _extract_feature_names(X):
+    """Return dataframe column labels, or None when they are not all strings.
+
+    Mirrors scikit-learn, which only tracks feature names for containers whose
+    columns are entirely strings. ``check_array`` discards this information, so
+    it has to be read before any conversion to an array.
+    """
+    columns = getattr(X, "columns", None)
+    if columns is None:
+        return None
+    names = np.asarray(columns, dtype=object)
+    if names.ndim != 1 or not all(isinstance(name, str) for name in names):
+        return None
+    return names
+
+
+def _feature_names_mismatch_message(fitted_names, given_names, limit=5):
+    """Describe how two sets of feature names differ."""
+    def _summarize(label, names):
+        shown = [f"- {name}" for name in sorted(names)[:limit]]
+        if len(names) > limit:
+            shown.append(f"- ... ({len(names) - limit} more)")
+        return "\n".join([label, *shown])
+
+    fitted_set, given_set = set(fitted_names), set(given_names)
+    sections = []
+    unseen = given_set - fitted_set
+    if unseen:
+        sections.append(_summarize("Feature names unseen at fit time:", unseen))
+    missing = fitted_set - given_set
+    if missing:
+        sections.append(
+            _summarize("Feature names seen at fit time, yet now missing:", missing)
+        )
+    if not sections:
+        sections.append(
+            "Feature names must be in the same order as they were in fit."
+        )
+    return "\n".join(sections)
+
+
 class HNBM(BaseEstimator):
     """
     Heterogeneous Newton Boosting Machine.
@@ -66,6 +108,7 @@ class HNBM(BaseEstimator):
         Whether to choose a contribution weight for every fitted learner.
     early_stopping_rounds : int or None, default=None
         Validation rounds without sufficient improvement before stopping.
+        Stopping also truncates the ensemble back to ``best_iteration_``.
     min_delta : float, default=0.0
         Minimum validation-loss improvement that resets early-stopping patience.
     subsample : float, default=1.0
@@ -89,6 +132,9 @@ class HNBM(BaseEstimator):
         Per-round training loss, validation loss, and selected learner index.
     best_iteration_ : int
         Best validation iteration, or the final iteration without validation.
+        The ensemble is truncated to this iteration only when
+        ``early_stopping_rounds`` triggers, so a run given an ``eval_set``
+        alone keeps every learner and predicts with all of them.
     """
 
     def __init__(
@@ -325,6 +371,7 @@ class HNBM(BaseEstimator):
                 "ensemble_",
                 "classes_",
                 "n_features_in_",
+                "feature_names_in_",
                 "n_iter_",
                 "learner_weights_",
                 "base_score_",
@@ -333,6 +380,37 @@ class HNBM(BaseEstimator):
             ):
                 self.__dict__.pop(attribute, None)
         return result
+
+    def _check_feature_names(self, X):
+        """Verify that ``X`` carries the same feature names seen during fit."""
+        fitted_names = getattr(self, "feature_names_in_", None)
+        given_names = _extract_feature_names(X)
+        if fitted_names is None and given_names is None:
+            return
+        if fitted_names is None:
+            warnings.warn(
+                f"X has feature names, but {type(self).__name__} was fitted "
+                "without feature names.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return
+        if given_names is None:
+            warnings.warn(
+                f"X does not have valid feature names, but "
+                f"{type(self).__name__} was fitted with feature names.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return
+        if len(fitted_names) != len(given_names) or np.any(
+            fitted_names != given_names
+        ):
+            raise ValueError(
+                "The feature names should match those that were passed during "
+                "fit.\n"
+                + _feature_names_mismatch_message(fitted_names, given_names)
+            )
 
     @staticmethod
     def _validate_sample_weight(sample_weight, n_samples):
@@ -480,6 +558,7 @@ class HNBM(BaseEstimator):
         ):
             raise ValueError("candidate_n_jobs must be a nonzero integer.")
 
+        feature_names = _extract_feature_names(X)
         X, y = _validate_X_y(X, y)
         sample_weight = self._validate_sample_weight(sample_weight, X.shape[0])
         if self.mode == "classification":
@@ -497,9 +576,24 @@ class HNBM(BaseEstimator):
         if eval_set is not None:
             if not isinstance(eval_set, (tuple, list)) or len(eval_set) != 2:
                 raise ValueError("eval_set must be an (X, y) pair.")
+            eval_feature_names = _extract_feature_names(eval_set[0])
             X_eval, y_eval_original = _validate_X_y(*eval_set)
             if X_eval.shape[1] != X.shape[1]:
                 raise ValueError("Training and validation data must have equal features.")
+            if (
+                feature_names is not None
+                and eval_feature_names is not None
+                and (
+                    len(feature_names) != len(eval_feature_names)
+                    or np.any(feature_names != eval_feature_names)
+                )
+            ):
+                raise ValueError(
+                    "eval_set feature names should match the training data.\n"
+                    + _feature_names_mismatch_message(
+                        feature_names, eval_feature_names
+                    )
+                )
             if self.mode == "classification":
                 unknown = np.setdiff1d(np.unique(y_eval_original), classes)
                 if unknown.size:
@@ -659,6 +753,10 @@ class HNBM(BaseEstimator):
             best_size - 1 if X_eval is not None and best_size else self.n_iter_ - 1
         )
         self.n_features_in_ = X.shape[1]
+        if feature_names is None:
+            self.__dict__.pop("feature_names_in_", None)
+        else:
+            self.feature_names_in_ = feature_names
         if self.mode == "classification":
             self.classes_ = classes
 
@@ -683,6 +781,7 @@ class HNBM(BaseEstimator):
     def _raw_predict(self, X):
         """Return raw model output for classification or regression."""
         self._check_fitted()
+        self._check_feature_names(X)
         X = _validate_X(X)
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
