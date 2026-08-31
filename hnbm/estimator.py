@@ -434,7 +434,9 @@ class HNBM(BaseEstimator):
         if not np.all(np.isfinite(weights)) or np.any(weights < 0):
             raise ValueError("sample_weight must be finite and non-negative.")
         if weights.sum() <= 0:
-            raise ValueError("sample_weight must have a positive total weight.")
+            raise ValueError(
+                "sample_weight must contain at least one non-zero number."
+            )
         return weights
 
     def _loss_value(self, y, raw_prediction, sample_weight=None):

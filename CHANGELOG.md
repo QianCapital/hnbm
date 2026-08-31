@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+Release date: 2026-08-30
+
+- Raise a sklearn-compatible error when every `sample_weight` is zero
+  (`"at least one non-zero number"`).
+
 ## 1.0.0
 
 Release date: 2026-08-30

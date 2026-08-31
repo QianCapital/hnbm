@@ -21,7 +21,7 @@ def test_zero_weight_sample_is_equivalent_to_removing_it():
 
 
 def test_all_zero_sample_weights_are_rejected():
-    with pytest.raises(ValueError, match="positive total"):
+    with pytest.raises(ValueError, match="non-zero"):
         ShallowNNRegressor(max_iter=1).fit(
             np.ones((3, 2)), np.ones(3), sample_weight=np.zeros(3)
         )

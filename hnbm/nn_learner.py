@@ -224,7 +224,9 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
         if not np.all(np.isfinite(sample_weight)):
             raise ValueError("sample_weight must contain only finite values.")
         if np.sum(sample_weight) <= 0:
-            raise ValueError("sample_weight must have a positive total weight.")
+            raise ValueError(
+                "sample_weight must contain at least one non-zero number."
+            )
 
         self.scaler_ = StandardScaler()
         X_scaled = self.scaler_.fit_transform(X, sample_weight=sample_weight)

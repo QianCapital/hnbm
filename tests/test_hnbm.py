@@ -234,7 +234,7 @@ def test_nnboost_exposes_adaptive_parameters_to_clone():
 
 
 def test_package_exposes_version():
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.0.1"
 
 
 @pytest.mark.parametrize(
