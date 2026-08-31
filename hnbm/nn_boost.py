@@ -115,10 +115,13 @@ class _NNBoostMixin:
         )
 
     def _set_nn_boost_params(self, **params):
-        rebuild = bool(self._REBUILD_PARAMS.intersection(params))
-        self._validate_nn_boost_params(params)
         result = super().set_params(**params)
-        if rebuild:
+        try:
+            self._validate_nn_boost_params()
+        except (TypeError, ValueError):
+            return result
+        rebuild = bool(self._REBUILD_PARAMS.intersection(params))
+        if rebuild or not self.base_learners_:
             self._build_base_learners()
         return result
 
@@ -192,7 +195,16 @@ class NNBoost(_NNBoostMixin, HNBM):
             objective=objective,
             objective_parameter=objective_parameter,
         )
-        self._validate_nn_boost_params()
+        if type(self) is NNBoost:
+            import warnings
+
+            warnings.warn(
+                "Constructing NNBoost(mode=...) directly is deprecated and will "
+                "be removed in a future release. Use NNBoostClassifier or "
+                "NNBoostRegressor instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
 
     def set_params(self, **params):
         return self._set_nn_boost_params(**params)
@@ -264,7 +276,6 @@ class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
             objective=objective,
             objective_parameter=objective_parameter,
         )
-        self._validate_nn_boost_params()
 
     def set_params(self, **params):
         if "mode" in params:
@@ -338,7 +349,6 @@ class NNBoostRegressor(_NNBoostMixin, HNBMRegressor):
             objective=objective,
             objective_parameter=objective_parameter,
         )
-        self._validate_nn_boost_params()
 
     def set_params(self, **params):
         if "mode" in params:

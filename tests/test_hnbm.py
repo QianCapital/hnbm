@@ -204,13 +204,16 @@ def test_prediction_checks_feature_count():
     ],
 )
 def test_invalid_hnbm_parameters_are_rejected(parameter, value, message):
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
+    model = NNBoostRegressor(**{parameter: value})
     with pytest.raises(ValueError, match=message):
-        NNBoostRegressor(**{parameter: value})
+        model.fit(X, y)
 
 
 def test_line_search_requires_boolean():
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
     with pytest.raises(ValueError, match="boolean"):
-        NNBoostRegressor(line_search="yes")
+        NNBoostRegressor(line_search="yes").fit(X, y)
 
 
 def test_nnboost_exposes_adaptive_parameters_to_clone():
@@ -230,8 +233,8 @@ def test_nnboost_exposes_adaptive_parameters_to_clone():
     assert model.subsample == pytest.approx(0.8)
 
 
-def test_package_exposes_staged_version():
-    assert __version__ == "0.3.1"
+def test_package_exposes_version():
+    assert __version__ == "1.0.0"
 
 
 @pytest.mark.parametrize(
@@ -269,8 +272,9 @@ def test_quantile_objective_uses_weighted_quantile_base_score():
 
 
 def test_classification_rejects_regression_objective():
+    X, y = make_classification(n_samples=30, n_features=4, random_state=0)
     with pytest.raises(ValueError, match="objective"):
-        NNBoostClassifier(objective="quantile")
+        NNBoostClassifier(objective="quantile").fit(X, y)
 
 
 def test_custom_metric_is_recorded_for_training_and_validation():
@@ -341,13 +345,15 @@ def test_optional_compaction_removes_only_small_weight_learners():
     assert model.n_iter_ == 2
 
 
-def test_hnbm_set_params_is_transactional():
+def test_hnbm_set_params_stores_values_before_fit_validation():
     model = NNBoostRegressor(num_iterations=2)
-    with pytest.raises(ValueError, match="finite"):
-        model.set_params(learning_rate=float("nan"))
+    result = model.set_params(learning_rate=float("nan"))
 
-    assert model.learning_rate == 0.1
-    assert model.num_iterations == 2
+    assert result is model
+    assert np.isnan(model.learning_rate)
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
+    with pytest.raises(ValueError, match="finite"):
+        model.fit(X, y)
 
 
 @pytest.mark.parametrize(
@@ -362,19 +368,18 @@ def test_hnbm_set_params_is_transactional():
     ],
 )
 def test_invalid_nnboost_parameters_are_rejected(parameter, value, message):
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
     model = NNBoostRegressor()
-    original_pool = model.base_learners_
+    model.set_params(**{parameter: value})
     with pytest.raises(ValueError, match=message):
-        model.set_params(**{parameter: value})
-
-    assert getattr(model, parameter) != value
-    assert model.base_learners_ is original_pool
+        model.fit(X, y)
 
 
 @pytest.mark.parametrize("value", [8, "8", None, [[8]], (size for size in [8])])
 def test_hidden_layer_sizes_requires_a_one_dimensional_sequence(value):
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
     with pytest.raises(ValueError, match="sequence"):
-        NNBoostRegressor(hidden_layer_sizes=value)
+        NNBoostRegressor(hidden_layer_sizes=value).fit(X, y)
 
 
 def test_fitted_iteration_count_matches_completed_boosting_rounds():

@@ -12,6 +12,13 @@ Built-in support includes **shallow neural network** base learners via `NNBoostC
 
 This is the core framework behind [SnapBoost](https://github.com/qiancapital/snapboost), inspired by [SnapBoost: A Heterogeneous Boosting Machine](https://arxiv.org/abs/2006.09745) (Parnell et al., NeurIPS 2020).
 
+## New in 1.0
+
+HNBM 1.0 freezes `HNBMClassifier` / `HNBMRegressor`, reports sklearn estimator
+tags (binary-only classification, dense inputs), and delays parameter
+validation until `fit`. Constructing `HNBM(mode=...)` or `NNBoost(mode=...)`
+directly is deprecated.
+
 ## New in 0.3.0: adaptive training
 
 HNBM 0.3.0 adds weighted training, optimized constant base scores, validation

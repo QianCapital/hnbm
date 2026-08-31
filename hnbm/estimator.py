@@ -8,7 +8,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin, clone
 from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score, mean_squared_error, log_loss, r2_score
 from sklearn.utils.metaestimators import available_if
-from sklearn.utils.multiclass import check_classification_targets
+from sklearn.utils.multiclass import check_classification_targets, type_of_target
 from sklearn.utils.validation import (
     check_array,
     check_consistent_length,
@@ -152,19 +152,14 @@ class HNBM(BaseEstimator):
         objective="auto",
         objective_parameter=None,
     ):
-        self._validate_hnbm_params(
-            num_iterations=num_iterations,
-            learning_rate=learning_rate,
-            mode=mode,
-            random_state=random_state,
-            selection_strategy=selection_strategy,
-            line_search=line_search,
-            early_stopping_rounds=early_stopping_rounds,
-            min_delta=min_delta,
-            subsample=subsample,
-            objective=objective,
-            objective_parameter=objective_parameter,
-        )
+        if type(self) is HNBM:
+            warnings.warn(
+                "Constructing HNBM(mode=...) directly is deprecated and will "
+                "be removed in a future release. Subclass HNBMClassifier or "
+                "HNBMRegressor instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
 
         self.num_iterations = num_iterations
         self.learning_rate = learning_rate
@@ -205,14 +200,37 @@ class HNBM(BaseEstimator):
         if parent_tags is None:
             return self._more_tags()
         tags = parent_tags()
-        tags.estimator_type = (
-            "classifier" if self.mode == "classification" else "regressor"
-        )
+        mode = getattr(self, "mode", None)
+        if mode == "classification":
+            tags.estimator_type = "classifier"
+            classifier_tags = getattr(tags, "classifier_tags", None)
+            if classifier_tags is None:
+                try:
+                    from sklearn.utils._tags import ClassifierTags
+                except ImportError:
+                    classifier_tags = None
+                else:
+                    tags.classifier_tags = ClassifierTags()
+                    classifier_tags = tags.classifier_tags
+            if classifier_tags is not None:
+                classifier_tags.multi_class = False
+        elif mode == "regression":
+            tags.estimator_type = "regressor"
+        self._apply_input_tags(tags)
         return tags
+
+    @staticmethod
+    def _apply_input_tags(tags):
+        input_tags = getattr(tags, "input_tags", None)
+        if input_tags is not None:
+            input_tags.allow_nan = False
+            input_tags.sparse = False
 
     def _more_tags(self):
         tags = super()._more_tags()
-        tags["binary_only"] = self.mode == "classification"
+        tags["binary_only"] = getattr(self, "mode", None) == "classification"
+        tags["allow_nan"] = False
+        tags["poor_score"] = False
         return tags
 
     @staticmethod
@@ -299,6 +317,21 @@ class HNBM(BaseEstimator):
         ):
             raise ValueError("Quantile must be strictly between 0 and 1.")
 
+    def _validate_current_params(self):
+        self._validate_hnbm_params(
+            num_iterations=self.num_iterations,
+            learning_rate=self.learning_rate,
+            mode=self.mode,
+            random_state=self.random_state,
+            selection_strategy=getattr(self, "selection_strategy", "random"),
+            line_search=getattr(self, "line_search", False),
+            early_stopping_rounds=getattr(self, "early_stopping_rounds", None),
+            min_delta=getattr(self, "min_delta", 0.0),
+            subsample=getattr(self, "subsample", 1.0),
+            objective=getattr(self, "objective", "auto"),
+            objective_parameter=getattr(self, "objective_parameter", None),
+        )
+
     def _check_fitted(self):
         check_is_fitted(self, "ensemble_")
         if not self.ensemble_:
@@ -344,27 +377,6 @@ class HNBM(BaseEstimator):
         return probabilities / probability_sum
 
     def set_params(self, **params):
-        self._validate_hnbm_params(
-            num_iterations=params.get("num_iterations", self.num_iterations),
-            learning_rate=params.get("learning_rate", self.learning_rate),
-            mode=params.get("mode", self.mode),
-            random_state=params.get("random_state", self.random_state),
-            selection_strategy=params.get(
-                "selection_strategy", getattr(self, "selection_strategy", "random")
-            ),
-            line_search=params.get(
-                "line_search", getattr(self, "line_search", False)
-            ),
-            early_stopping_rounds=params.get(
-                "early_stopping_rounds", getattr(self, "early_stopping_rounds", None)
-            ),
-            min_delta=params.get("min_delta", getattr(self, "min_delta", 0.0)),
-            subsample=params.get("subsample", getattr(self, "subsample", 1.0)),
-            objective=params.get("objective", getattr(self, "objective", "auto")),
-            objective_parameter=params.get(
-                "objective_parameter", getattr(self, "objective_parameter", None)
-            ),
-        )
         result = super().set_params(**params)
         if params:
             for attribute in (
@@ -545,6 +557,7 @@ class HNBM(BaseEstimator):
         -------
         self
         """
+        self._validate_current_params()
         probabilities = self._validate_learner_pool()
         if eval_metric is not None and not callable(eval_metric):
             raise TypeError("eval_metric must be callable or None.")
@@ -563,12 +576,16 @@ class HNBM(BaseEstimator):
         sample_weight = self._validate_sample_weight(sample_weight, X.shape[0])
         if self.mode == "classification":
             check_classification_targets(y)
-            classes = np.unique(y)
-            if classes.shape[0] != 2:
+            try:
+                y_type = type_of_target(y, input_name="y")
+            except TypeError:
+                y_type = type_of_target(y)
+            if y_type != "binary":
                 raise ValueError(
-                    "Binary classification requires exactly two classes; got "
-                    f"{classes.shape[0]} class(es)."
+                    "Only binary classification is supported. The type of the "
+                    f"target is {y_type}."
                 )
+            classes = np.unique(y)
             y = np.where(y == classes[0], -1.0, 1.0)
         else:
             y = check_array(y, ensure_2d=False, dtype=float)
@@ -785,8 +802,8 @@ class HNBM(BaseEstimator):
         X = _validate_X(X)
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
-                f"X has {X.shape[1]} features, but model was trained with "
-                f"{self.n_features_in_} features."
+                f"X has {X.shape[1]} features, but {type(self).__name__} is "
+                f"expecting {self.n_features_in_} features as input."
             )
         preds = np.full(X.shape[0], getattr(self, "base_score_", 0.0))
         weights = getattr(
@@ -930,6 +947,14 @@ class HNBMClassifier(ClassifierMixin, HNBM):
     """
     _mode = "classification"
 
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        classifier_tags = getattr(tags, "classifier_tags", None)
+        if classifier_tags is not None:
+            classifier_tags.multi_class = False
+        self._apply_input_tags(tags)
+        return tags
+
     def __init__(
         self,
         num_iterations=100,
@@ -994,6 +1019,11 @@ class HNBMRegressor(RegressorMixin, HNBM):
         Fraction of training rows used by each learner.
     """
     _mode = "regression"
+
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        self._apply_input_tags(tags)
+        return tags
 
     def __init__(
         self,

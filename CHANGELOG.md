@@ -1,8 +1,34 @@
 # Changelog
 
+## 1.0.0
+
+Release date: 2026-08-30
+
+- Freeze the public `HNBMClassifier` / `HNBMRegressor` constructor surface.
+- Report sklearn 1.6+ estimator tags: binary-only classification, dense
+  inputs, no native missing values.
+- Delay parameter validation until `fit`, matching the sklearn estimator
+  contract (`init` / `set_params` no longer raise on invalid values).
+- Raise sklearn-compatible errors for multiclass targets and feature-count
+  mismatches at predict time.
+- Deprecate constructing `HNBM(mode=...)` and `NNBoost(mode=...)` directly.
+- Add `check_estimator` coverage for tree-backed classifier and regressor
+  subclasses.
+- Mark the package as typed (`py.typed`).
+
+### Compatibility
+
+- Invalid constructor values are stored and rejected at `fit` instead of at
+  construction. Callers that relied on `__init__` raising should catch the
+  error from `fit`.
+- Binary classifiers now raise `ValueError` matching
+  `"Only binary classification is supported."`
+- Requires scikit-learn 1.0 or newer; sklearn 1.6+ is recommended for the
+  full tag-based estimator checks.
+
 ## 0.3.1
 
-Release date: staged
+Release date: 2026-08-30
 
 - Record `feature_names_in_` and reject dataframes whose columns are reordered
   or renamed between fit and predict.
