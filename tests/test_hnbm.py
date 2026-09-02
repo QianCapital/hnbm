@@ -20,6 +20,7 @@ from hnbm import (
     HNBM,
     HNBMClassifier,
     HNBMRegressor,
+    NNBoost,
     NNBoostClassifier,
     NNBoostRegressor,
     __version__,
@@ -123,6 +124,42 @@ def test_nnboost_clone_and_set_params(estimator_class):
 
     assert result is estimator
     assert len(estimator.base_learners_) == 2
+
+
+def test_nnboost_direct_construction_is_deprecated():
+    with pytest.warns(FutureWarning, match="NNBoostClassifier or NNBoostRegressor"):
+        model = NNBoost(num_iterations=1, mode="regression")
+
+    assert model.mode == "regression"
+    assert model.set_params(verbose=False) is model
+
+
+def test_task_specific_nnboost_rejects_mode():
+    with pytest.raises(ValueError, match="mode cannot be set"):
+        NNBoostClassifier().set_params(mode="regression")
+    with pytest.raises(ValueError, match="mode cannot be set"):
+        NNBoostRegressor().set_params(mode="classification")
+
+
+def test_nnboost_rejects_empty_hidden_layer_sizes():
+    X, y = make_regression(n_samples=10, n_features=2, random_state=0)
+    with pytest.raises(ValueError, match="at least one"):
+        NNBoostRegressor(hidden_layer_sizes=()).fit(X, y)
+
+
+def test_nnboost_rejects_invalid_activation():
+    X, y = make_regression(n_samples=10, n_features=2, random_state=0)
+    with pytest.raises(ValueError, match="activation"):
+        NNBoostRegressor(activation="sigmoid").fit(X, y)
+
+
+def test_set_params_skips_rebuild_for_unrelated_keys():
+    model = NNBoostRegressor()
+    model.set_params(hidden_layer_sizes=(4,))
+    learners = model.base_learners_
+    model.set_params(verbose=False)
+
+    assert model.base_learners_ is learners
 
 
 def test_nnboost_regressor_works_with_grid_search():
@@ -619,6 +656,24 @@ def test_renamed_columns_report_the_difference():
 
     with pytest.raises(ValueError, match="unseen at fit time"):
         model.predict(renamed)
+
+
+def test_many_renamed_columns_are_summarized():
+    frame, y = _regression_frame(n_features=8)
+    model = TreeBoostRegressor(random_state=11).fit(frame, y)
+    renamed = frame.rename(columns={f"f{index}": f"g{index}" for index in range(8)})
+
+    with pytest.raises(ValueError, match=r"\.\.\. \(3 more\)"):
+        model.predict(renamed)
+
+
+def test_non_string_column_names_are_ignored():
+    pd = pytest.importorskip("pandas")
+    X, y = make_regression(n_samples=20, n_features=3, random_state=0)
+    frame = pd.DataFrame(X, columns=[0, 1, 2])
+    model = TreeBoostRegressor(random_state=0).fit(frame, y)
+
+    assert not hasattr(model, "feature_names_in_")
 
 
 def test_mixing_named_and_unnamed_inputs_warns():

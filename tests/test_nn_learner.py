@@ -91,3 +91,63 @@ def test_pool_requires_a_one_dimensional_size_sequence(value):
 def test_pool_rejects_boolean_layer_sizes(value):
     with pytest.raises(ValueError, match="integer"):
         make_shallow_nn_pool(hidden_layer_sizes=(value,))
+
+
+@pytest.mark.parametrize("activation", ["tanh", "logistic"])
+def test_non_relu_activations_fit_and_predict(activation):
+    X = np.arange(20.0).reshape(10, 2)
+    y = np.arange(10.0)
+    model = ShallowNNRegressor(
+        activation=activation, max_iter=5, random_state=1
+    ).fit(X, y)
+
+    assert np.all(np.isfinite(model.predict(X)))
+
+
+def test_invalid_activation_is_rejected():
+    with pytest.raises(ValueError, match="activation"):
+        ShallowNNRegressor(activation="sigmoid", max_iter=1).fit(
+            np.ones((3, 2)), np.ones(3)
+        )
+
+
+def test_constant_target_uses_unit_scale():
+    X = np.arange(10.0).reshape(5, 2)
+    y = np.ones(5)
+    model = ShallowNNRegressor(max_iter=3, random_state=1).fit(X, y)
+
+    assert model.y_scale_ == pytest.approx(1.0)
+
+
+def test_sample_weight_must_match_target_length():
+    with pytest.raises(ValueError, match="same length"):
+        ShallowNNRegressor(max_iter=1).fit(
+            np.ones((3, 2)), np.ones(3), sample_weight=np.ones(2)
+        )
+
+
+def test_negative_sample_weight_is_rejected():
+    with pytest.raises(ValueError, match="non-negative"):
+        ShallowNNRegressor(max_iter=1).fit(
+            np.ones((3, 2)), np.ones(3), sample_weight=np.array([1.0, -1.0, 1.0])
+        )
+
+
+def test_nonfinite_sample_weight_is_rejected():
+    with pytest.raises(ValueError, match="finite"):
+        ShallowNNRegressor(max_iter=1).fit(
+            np.ones((3, 2)), np.ones(3), sample_weight=np.array([1.0, np.nan, 1.0])
+        )
+
+
+def test_predict_checks_feature_count():
+    model = ShallowNNRegressor(max_iter=1, random_state=0).fit(
+        np.ones((4, 2)), np.arange(4.0)
+    )
+    with pytest.raises(ValueError, match="features"):
+        model.predict(np.ones((2, 3)))
+
+
+def test_pool_rejects_empty_hidden_layer_sizes():
+    with pytest.raises(ValueError, match="at least one"):
+        make_shallow_nn_pool(hidden_layer_sizes=())
