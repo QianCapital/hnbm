@@ -12,10 +12,39 @@ Built-in support includes **shallow neural network** base learners via `NNBoostC
 
 This is the core framework behind [SnapBoost](https://github.com/qiancapital/snapboost), inspired by [SnapBoost: A Heterogeneous Boosting Machine](https://arxiv.org/abs/2006.09745) (Parnell et al., NeurIPS 2020).
 
+## New in 1.2
+
+HNBM 1.2 adds native multiclass classification with softmax Newton boosting.
+Binary logistic classification is unchanged: two classes still use a scalar
+logit. Multiclass models return `decision_function` of shape
+`(n_samples, n_classes)` and store one scalar learner per class each round.
+
+```python
+from sklearn.datasets import load_iris
+from hnbm import NNBoostClassifier
+
+X, y = load_iris(return_X_y=True)
+model = NNBoostClassifier(num_iterations=50, random_state=42, verbose=False)
+model.fit(X, y)
+print(model.n_classes_, model.predict_proba(X).shape)  # 3, (n_samples, 3)
+```
+
+## New in 1.1
+
+HNBM 1.1 passes original labels to `eval_metric` (including string class
+names), accepts `eval_sample_weight` for validation loss and early stopping,
+and adds `staged_predict` / `staged_predict_proba` /
+`staged_decision_function` plus `permutation_importance`.
+
+```python
+staged = list(model.staged_predict(X))
+importance = model.permutation_importance(X, y, n_repeats=5, random_state=42)
+```
+
 ## New in 1.0
 
 HNBM 1.0 freezes `HNBMClassifier` / `HNBMRegressor`, reports sklearn estimator
-tags (binary-only classification, dense inputs), and delays parameter
+tags (dense inputs, no native missing values), and delays parameter
 validation until `fit`. Constructing `HNBM(mode=...)` or `NNBoost(mode=...)`
 directly is deprecated.
 
@@ -71,6 +100,7 @@ smaller = robust.compact(min_abs_weight=1e-8)
 
 ## Table of Contents
 
+- [New in 1.2](#new-in-12)
 - [Mathematical Overview](#mathematical-overview)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -142,7 +172,26 @@ g=-y\sigma(-yF),\quad
 h=\sigma(yF)\sigma(-yF),
 $$
 
-and $P(y=+1\mid x)=\sigma(F_M(x))$.
+and $P(y=+1\mid x)=\sigma(F_M(x))$. Multiclass targets instead use a
+$K$-vector score $F(x)\in\mathbb{R}^K$ with
+
+$$
+p=\mathrm{softmax}(F),\quad
+\ell=-\log p_{y},\quad
+g_k=p_k-\mathbf{1}_{\{k=y\}},\quad
+h_k=p_k(1-p_k),
+$$
+
+$$
+r_k=-\frac{g_k}{h_k}
+=\frac{\mathbf{1}_{\{k=y\}}-p_k}{p_k(1-p_k)},
+\qquad
+F_{0,k}=\log\widehat p_k.
+$$
+
+Each round fits $K$ scalar learners from the same family and
+$P(y=k\mid x)=\mathrm{softmax}(F_M(x))_k$. See [MATH.md](MATH.md) for the
+full Hessian, the diagonal approximation, and the stable log-sum-exp form.
 
 The included NNBoost realization uses a uniform pool of one-hidden-layer
 networks. For hidden width $q$ its correction is
@@ -221,6 +270,23 @@ print("Accuracy:", model.score(X_test, y_test))
 model.evaluate(X_test, y_test)  # prints log loss
 ```
 
+Multiclass labels use softmax Newton boosting. `predict_proba` and
+`decision_function` then have one column per class:
+
+```python
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from hnbm import NNBoostClassifier
+
+X, y = load_iris(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=42)
+
+model = NNBoostClassifier(num_iterations=50, random_state=42, verbose=False)
+model.fit(X_train, y_train)
+print("Classes:", model.n_classes_)
+print("Probabilities shape:", model.predict_proba(X_test).shape)  # (n_samples, 3)
+```
+
 #### Regression
 
 ```python
@@ -275,7 +341,7 @@ model = TreeClassifier(
 model.fit(X_train, y_train)
 
 print("Accuracy:", model.score(X_test, y_test))
-print("Probabilities shape:", model.predict_proba(X_test).shape)  # (n_samples, 2)
+print("Probabilities shape:", model.predict_proba(X_test).shape)  # (n_samples, n_classes)
 model.evaluate(X_test, y_test)  # prints log loss
 ```
 
@@ -349,16 +415,23 @@ The recommended entry points (similar to `XGBClassifier` / `XGBRegressor`). Subc
 
 | Method | Classifier | Regressor | Description |
 |--------|------------|-----------|-------------|
-| `fit(X, y, sample_weight=None, eval_set=None, ...)` | ✓ | ✓ | Train with optional weights, validation, metrics, callbacks, and candidate parallelism |
+| `fit(X, y, sample_weight=None, eval_set=None, *, eval_sample_weight=None)` | ✓ | ✓ | Train with optional weights, validation, metrics, callbacks, and candidate parallelism |
 | `predict(X)` | ✓ | ✓ | Original class labels or continuous values |
-| `predict_proba(X)` | ✓ | | Probabilities, shape `(n_samples, 2)` |
-| `decision_function(X)` | ✓ | | Raw logits |
+| `predict_proba(X)` | ✓ | | Probabilities, shape `(n_samples, n_classes)` |
+| `decision_function(X)` | ✓ | | Raw logits: `(n_samples,)` binary, `(n_samples, n_classes)` multiclass |
+| `staged_predict(X)` | ✓ | ✓ | Predictions after each boosting round |
+| `staged_predict_proba(X)` | ✓ | | Probabilities after each round |
+| `staged_decision_function(X)` | ✓ | | Raw scores after each round |
+| `permutation_importance(X, y)` | ✓ | ✓ | Permutation importance of original features |
 | `score(X, y)` | ✓ | ✓ | Accuracy or R² |
 | `evaluate(X, y)` | ✓ | ✓ | Prints and returns log loss or RMSE |
 
-After fitting, `n_iter_` contains the number of completed boosting rounds. The
-inner epoch count for each fitted neural-network learner remains available on
-that learner's own `n_iter_` attribute.
+After fitting, `n_iter_` contains the number of completed boosting rounds.
+Classifiers also expose `classes_` and `n_classes_`. The inner epoch count
+for each fitted neural-network learner remains available on that learner's
+own `n_iter_` attribute. `eval_metric` receives original labels (including
+string class names). `eval_sample_weight` is used for validation loss and
+early stopping when an `eval_set` is provided.
 
 New fitted attributes in 0.3.0 include `base_score_`, `learner_weights_`,
 `history_`, and `best_iteration_`. Validation loss is recorded only when
@@ -392,7 +465,12 @@ model.fit(X_train, y_train)
 
 ### Loss functions
 
-`hnbm.losses` provides `Logistic` (classification) and `MeanSquaredError` (regression), each with a `compute_derivatives(y, f)` method returning gradient and Hessian vectors.
+`hnbm.losses` provides `Logistic` (binary classification), `Softmax`
+(multiclass classification), `MeanSquaredError`, `PseudoHuber`, and `Quantile`
+(regression). Each exposes `compute_derivatives` and `compute_loss`, returning
+gradient and Hessian arrays for the Newton step. `Logistic`, `Softmax`, and
+`MeanSquaredError` take `(y, f)`; `PseudoHuber` and `Quantile` take
+`(y, f, objective_parameter)`.
 
 ---
 
@@ -433,10 +511,33 @@ model.fit(X_train, y_train)
 | `subsample` | `float` | `1.0` | Fraction of training rows per learner |
 | `early_stopping_rounds` | positive `int` or `None` | `None` | Validation patience |
 | `min_delta` | `float` | `0.0` | Minimum validation improvement |
+| `objective` | `str` | `"auto"` | `"auto"` or `"log_loss"` for classification; `"auto"`, `"squared_error"`, `"pseudo_huber"`, or `"quantile"` for regression |
+| `objective_parameter` | `float` or `None` | `None` | Pseudo-Huber delta (default `1.0`) or quantile level (default `0.5`); ignored otherwise |
+
+For classification, both `objective="auto"` and `objective="log_loss"` select
+logistic loss for binary targets and softmax for multiclass targets.
+
+> **Choosing the Pseudo-Huber delta.** The Newton working response for
+> pseudo-Huber grows like `residual³ / delta²`, so the default `delta=1.0`
+> diverges on targets that are not roughly unit-scale. Standardize `y`, or set
+> `objective_parameter` to about the residual scale. This is the same
+> consideration as `huber_slope` in XGBoost's `reg:pseudohubererror`.
 
 The legacy `HNBM` class also accepts a `mode` parameter (`"classification"` or `"regression"`).
 
-**Label conventions (classification)**: accepts any two distinct class labels. Predictions use the original labels, and probability columns follow `classes_` order.
+**Label conventions (classification)**: binary and multiclass labels are
+accepted. Predictions use the original labels, and probability columns follow
+`classes_` order. Binary models keep a scalar `decision_function`; multiclass
+models return one column per class. A target with a single class raises
+`ValueError`.
+
+`fit(X, y, sample_weight=None, eval_set=None, *, eval_sample_weight=None)`
+accepts non-negative observation weights, one validation pair, and optional
+validation weights. `eval_metric(y, raw)` receives the original labels, not
+an internal encoding. After `fit`, `staged_predict` (and classifier
+`staged_predict_proba` / `staged_decision_function`) yield the ensemble after
+each round. `permutation_importance(X, y)` is the recommended
+feature-importance API.
 
 ---
 
@@ -478,7 +579,7 @@ release distribution is built.
 
 ## Related projects
 
-- **[snapboost](https://github.com/QianCapital/snapboost)** — a concrete HNBM using decision trees and RFF ridge regressors
+- **[snapboost](https://github.com/qiancapital/snapboost)** — a concrete HNBM using decision trees and RFF ridge regressors
 - **NNBoost** (this package) — a concrete HNBM using shallow neural networks
 
 ---

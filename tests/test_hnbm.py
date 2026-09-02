@@ -24,7 +24,7 @@ from hnbm import (
     NNBoostRegressor,
     __version__,
 )
-from hnbm.losses import Logistic
+from hnbm.losses import Logistic, Softmax
 
 
 class TreeBoostRegressor(HNBMRegressor):
@@ -37,6 +37,17 @@ class TreeBoostRegressor(HNBMRegressor):
         )
         self.base_learners_ = [DecisionTreeRegressor(max_depth=2)]
         self.probabilities_ = list(probabilities)
+
+
+class TreeBoostClassifier(HNBMClassifier):
+    def __init__(self, num_iterations=2, random_state=0):
+        super().__init__(
+            num_iterations=num_iterations,
+            random_state=random_state,
+            verbose=False,
+        )
+        self.base_learners_ = [DecisionTreeRegressor(max_depth=2, random_state=0)]
+        self.probabilities_ = [1.0]
 
 
 class UnweightedRegressor(BaseEstimator, RegressorMixin):
@@ -80,6 +91,29 @@ def test_logistic_derivatives_are_finite_for_extreme_margins():
     assert np.all(np.isfinite(gradient))
     assert np.all(np.isfinite(hessian))
     assert np.all(hessian > 0)
+
+
+def test_softmax_derivatives_match_one_hot_gradient():
+    scores = np.zeros((4, 3))
+    y = np.array([0, 1, 2, 1])
+    gradient, hessian = Softmax.compute_derivatives(y, scores)
+    probability = Softmax.probabilities(scores)
+
+    assert probability == pytest.approx(np.full((4, 3), 1.0 / 3.0))
+    expected_gradient = probability.copy()
+    expected_gradient[np.arange(4), y] -= 1.0
+    assert gradient == pytest.approx(expected_gradient)
+    assert hessian == pytest.approx(probability * (1.0 - probability))
+    assert Softmax.compute_loss(y, scores) == pytest.approx(np.full(4, np.log(3.0)))
+
+
+def test_softmax_probabilities_are_stable_for_extreme_logits():
+    scores = np.array([[1e4, 0.0, -1e4], [-1e4, -1e4, 1e4]])
+    with np.errstate(over="raise"):
+        probability = Softmax.probabilities(scores)
+
+    assert probability[0] == pytest.approx([1.0, 0.0, 0.0], abs=1e-12)
+    assert probability[1] == pytest.approx([0.0, 0.0, 1.0], abs=1e-12)
 
 
 @pytest.mark.parametrize("estimator_class", [NNBoostClassifier, NNBoostRegressor])
@@ -234,7 +268,7 @@ def test_nnboost_exposes_adaptive_parameters_to_clone():
 
 
 def test_package_exposes_version():
-    assert __version__ == "1.0.1"
+    assert __version__ == "1.2.0"
 
 
 @pytest.mark.parametrize(
@@ -279,7 +313,10 @@ def test_classification_rejects_regression_objective():
 
 def test_custom_metric_is_recorded_for_training_and_validation():
     X, y = make_regression(n_samples=30, n_features=3, random_state=3)
-    metric = lambda truth, raw: np.mean(np.abs(truth - raw))
+
+    def metric(truth, raw):
+        return np.mean(np.abs(truth - raw))
+
     model = TreeBoostRegressor(num_iterations=2).fit(
         X[:20], y[:20], eval_set=(X[20:], y[20:]), eval_metric=metric
     )
@@ -478,7 +515,7 @@ def test_eval_history_and_early_stopping_restore_best_ensemble():
     model.fit(X[:30], y[:30], eval_set=(X[30:], y[30:]))
 
     assert model.n_iter_ == 1
-    assert len(model.history_["validation_loss"]) == 3
+    assert len(model.history_["validation_loss"]) == 1
 
 
 def test_round_specific_random_states_are_distinct_and_reproducible():
@@ -524,6 +561,8 @@ def test_regressor_does_not_advertise_classifier_methods():
     model = NNBoostRegressor()
     assert not hasattr(model, "decision_function")
     assert not hasattr(model, "predict_proba")
+    assert not hasattr(model, "staged_decision_function")
+    assert not hasattr(model, "staged_predict_proba")
 
 
 def test_task_mixins_precede_hnbm_in_estimator_mro():
@@ -608,3 +647,258 @@ def test_set_params_clears_recorded_feature_names():
     model.set_params(num_iterations=3)
 
     assert not hasattr(model, "feature_names_in_")
+
+
+def test_eval_metric_receives_original_classification_labels():
+    X, y = make_classification(n_samples=40, n_features=4, random_state=2)
+    labels = np.where(y == 0, "neg", "pos")
+    seen = []
+
+    def metric(truth, raw):
+        seen.append(np.unique(truth))
+        return 0.0
+
+    TreeBoostClassifier(num_iterations=2, random_state=2).fit(
+        X[:30],
+        labels[:30],
+        eval_set=(X[30:], labels[30:]),
+        eval_metric=metric,
+    )
+
+    assert all(set(values) == {"neg", "pos"} for values in seen)
+    assert len(seen) == 4
+
+
+def test_eval_sample_weight_changes_validation_loss():
+    X, y = make_regression(n_samples=40, n_features=3, random_state=3)
+    model = TreeBoostRegressor(num_iterations=2, random_state=3)
+    uniform = model.fit(X[:30], y[:30], eval_set=(X[30:], y[30:])).history_[
+        "validation_loss"
+    ]
+    weighted = TreeBoostRegressor(num_iterations=2, random_state=3).fit(
+        X[:30],
+        y[:30],
+        eval_set=(X[30:], y[30:]),
+        eval_sample_weight=np.linspace(1.0, 4.0, 10),
+    ).history_["validation_loss"]
+
+    assert uniform != pytest.approx(weighted)
+
+
+def test_eval_sample_weight_requires_eval_set():
+    X, y = make_regression(n_samples=20, n_features=2, random_state=3)
+    with pytest.raises(ValueError, match="eval_sample_weight"):
+        TreeBoostRegressor().fit(X, y, eval_sample_weight=np.ones(len(y)))
+
+
+def test_staged_predict_matches_final_prediction():
+    X, y = make_regression(n_samples=30, n_features=3, random_state=3)
+    model = TreeBoostRegressor(num_iterations=3, random_state=3).fit(X, y)
+    staged = list(model.staged_predict(X))
+
+    assert len(staged) == model.n_iter_
+    assert staged[-1] == pytest.approx(model.predict(X))
+
+
+def test_staged_classifier_outputs_match_final_prediction():
+    X, y = make_classification(n_samples=40, n_features=4, random_state=2)
+    model = TreeBoostClassifier(num_iterations=3, random_state=2).fit(X, y)
+    labels = list(model.staged_predict(X))
+    probabilities = list(model.staged_predict_proba(X))
+    logits = list(model.staged_decision_function(X))
+
+    assert np.array_equal(labels[-1], model.predict(X))
+    assert probabilities[-1] == pytest.approx(model.predict_proba(X))
+    assert logits[-1] == pytest.approx(model.decision_function(X))
+
+
+def test_permutation_importance_has_one_score_per_feature():
+    X, y = make_regression(n_samples=40, n_features=3, random_state=3)
+    model = TreeBoostRegressor(num_iterations=3, random_state=3).fit(X, y)
+    result = model.permutation_importance(X, y, n_repeats=2, random_state=3)
+
+    assert result.importances_mean.shape == (3,)
+    assert np.all(np.isfinite(result.importances_mean))
+
+
+def test_multiclass_fits_softmax_and_preserves_labels():
+    X, y = make_classification(
+        n_samples=90,
+        n_features=6,
+        n_informative=4,
+        n_redundant=0,
+        n_classes=3,
+        n_clusters_per_class=1,
+        random_state=6,
+    )
+    labels = np.array(["a", "b", "c"])[y]
+    model = TreeBoostClassifier(num_iterations=5, random_state=6).fit(X, labels)
+
+    probabilities = model.predict_proba(X)
+    logits = model.decision_function(X)
+
+    assert model.n_classes_ == 3
+    assert np.array_equal(model.classes_, ["a", "b", "c"])
+    assert probabilities.shape == (90, 3)
+    assert logits.shape == (90, 3)
+    assert np.allclose(probabilities.sum(axis=1), 1.0)
+    assert set(model.predict(X)).issubset({"a", "b", "c"})
+    assert np.array_equal(model.predict(X), model.classes_[np.argmax(logits, axis=1)])
+    assert model.n_iter_ == 5
+    assert len(model.ensemble_) == 5
+    assert all(len(round_entry) == 3 for round_entry in model.ensemble_)
+    assert model.loss_ is Softmax
+    staged = list(model.staged_predict_proba(X))
+    assert staged[-1] == pytest.approx(probabilities)
+
+
+def test_multiclass_base_score_matches_class_priors():
+    X = np.arange(24.0).reshape(12, 2)
+    y = np.array([0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2])
+    model = TreeBoostClassifier(num_iterations=1, random_state=2).fit(X, y)
+
+    priors = np.array([6.0, 3.0, 3.0]) / 12.0
+    assert model.base_score_ == pytest.approx(np.log(priors))
+
+
+def test_multiclass_greedy_line_search_and_eval_set():
+    X, y = make_classification(
+        n_samples=80,
+        n_features=5,
+        n_informative=4,
+        n_redundant=0,
+        n_classes=3,
+        n_clusters_per_class=1,
+        random_state=7,
+    )
+    model = TreeBoostClassifier(num_iterations=3, random_state=7)
+    model.selection_strategy = "greedy"
+    model.line_search = True
+    model.base_learners_ = [
+        DecisionTreeRegressor(max_depth=1),
+        DecisionTreeRegressor(max_depth=3),
+    ]
+    model.probabilities_ = [0.5, 0.5]
+    model.fit(X[:60], y[:60], eval_set=(X[60:], y[60:]))
+
+    assert model.n_iter_ == 3
+    assert len(model.history_["validation_loss"]) == 3
+    assert np.all(np.isfinite(model.predict_proba(X)))
+
+
+def test_early_stopping_truncates_history_to_the_retained_ensemble():
+    X, y = make_classification(
+        n_samples=90,
+        n_features=6,
+        n_informative=4,
+        n_redundant=0,
+        n_classes=3,
+        n_clusters_per_class=1,
+        random_state=6,
+    )
+    model = TreeBoostClassifier(num_iterations=20, random_state=6)
+    model.early_stopping_rounds = 2
+    model.min_delta = 1e100
+
+    # An eval_metric populates the two metric histories as well, so every list
+    # in history_ is covered by the alignment check below.
+    model.fit(
+        X[:60],
+        y[:60],
+        eval_set=(X[60:], y[60:]),
+        eval_metric=lambda truth, raw: float(np.mean(raw)),
+    )
+
+    assert model.n_iter_ == 1
+    assert len(model.ensemble_) == 1
+    assert model.best_iteration_ == 0
+    assert set(model.history_) == {
+        "training_loss",
+        "validation_loss",
+        "training_metric",
+        "validation_metric",
+        "learner_index",
+        "learner_weight",
+    }
+    for recorded in model.history_.values():
+        assert len(recorded) == model.n_iter_
+
+
+def test_callbacks_report_the_early_stopping_round():
+    X, y = make_regression(n_samples=40, n_features=2, random_state=4)
+    iterations = []
+    model = TreeBoostRegressor(num_iterations=20)
+    model.early_stopping_rounds = 2
+    model.min_delta = 1e100
+
+    model.fit(
+        X[:30],
+        y[:30],
+        eval_set=(X[30:], y[30:]),
+        callbacks=[lambda state: iterations.append(state["iteration"])],
+    )
+
+    # Three rounds are fitted before patience runs out; the ensemble keeps one.
+    assert iterations == [0, 1, 2]
+    assert model.n_iter_ == 1
+
+
+def test_multiclass_eval_set_rejects_unknown_labels():
+    X, y = make_classification(
+        n_samples=40,
+        n_features=4,
+        n_informative=3,
+        n_redundant=0,
+        n_classes=3,
+        n_clusters_per_class=1,
+        random_state=8,
+    )
+    model = TreeBoostClassifier(num_iterations=1, random_state=8)
+    y_eval = y[30:].copy()
+    y_eval[0] = 9
+
+    with pytest.raises(ValueError, match="unknown class"):
+        model.fit(X[:30], y[:30], eval_set=(X[30:], y_eval))
+
+
+def test_binary_ensemble_remains_one_learner_per_round():
+    X, y = make_classification(n_samples=40, n_features=4, random_state=2)
+    model = TreeBoostClassifier(num_iterations=3, random_state=2).fit(X, y)
+
+    assert model.n_classes_ == 2
+    assert model.decision_function(X).ndim == 1
+    assert model.predict_proba(X).shape == (40, 2)
+    assert all(hasattr(learner, "predict") for learner in model.ensemble_)
+    assert model.loss_ is Logistic
+
+
+def test_single_class_target_is_rejected():
+    X = np.arange(20.0).reshape(10, 2)
+    model = TreeBoostClassifier(num_iterations=2, random_state=0)
+
+    with pytest.raises(ValueError, match="only one class"):
+        model.fit(X, np.ones(10))
+
+    assert not hasattr(model, "ensemble_")
+
+
+def test_failed_multiclass_fit_keeps_binary_loss_of_fitted_model():
+    X, y = make_classification(n_samples=40, n_features=4, random_state=9)
+    model = TreeBoostClassifier(num_iterations=2, random_state=9).fit(X, y)
+    assert model.loss_ is Logistic
+
+    X_multi, y_multi = make_classification(
+        n_samples=60,
+        n_features=4,
+        n_informative=3,
+        n_redundant=0,
+        n_classes=3,
+        n_clusters_per_class=1,
+        random_state=9,
+    )
+    with pytest.raises(ValueError, match="unknown class"):
+        model.fit(
+            X_multi, y_multi, eval_set=(X_multi, np.full(y_multi.shape[0], 99))
+        )
+
+    assert model.loss_ is Logistic

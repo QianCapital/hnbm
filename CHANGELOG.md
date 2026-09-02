@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.2.0
+
+Release date: 2026-09-01
+
+- Add native multiclass classification with softmax Newton boosting. Binary
+  logistic classification is unchanged: two classes still use a scalar logit.
+- Fit one scalar base learner per class in each multiclass boosting round,
+  using the diagonal Hessian `p_k (1 - p_k)`.
+- Store `n_classes_` and, for multiclass models, a per-class `base_score_`.
+- Report sklearn classifier tags with `multi_class=True`.
+- Export `hnbm.losses.Softmax`.
+- Document `objective` and `objective_parameter` in the estimator docstrings and
+  the README parameter tables.
+- Document that the pseudo-Huber `delta` must match the residual scale. The
+  Newton working response grows like `residual³ / delta²`, so the default
+  `delta=1.0` diverges on targets that are not roughly unit-scale.
+
+### Fixed
+
+- Raise `ValueError` when a classification target contains a single class.
+  Previously such a fit produced a `predict_proba` with two columns while
+  `classes_` held one label, and `evaluate` raised from `log_loss`.
+- Stop a failed `fit` from leaving behind the transient class count used while
+  boosting. A failed multiclass fit could make an already-fitted binary model
+  report `Softmax` from `loss_`.
+- Bind the greedy candidate closure explicitly instead of capturing loop
+  variables, removing a latent hazard if candidate fitting is ever deferred.
+- Truncate every `history_` list along with the ensemble when early stopping
+  rolls back to `best_iteration_`. `history_` previously kept the rounds that
+  were discarded, so it ran longer than `ensemble_` and `n_iter_` and silently
+  misaligned any per-round series plotted against them.
+- Run callbacks for the round that triggers early stopping. The loop used to
+  break before the callback block, so a callback accumulating per-round state
+  was missing its final entry.
+- Correct the softmax Hessian attribution in MATH.md. The text claimed the
+  diagonal `p_k (1 - p_k)` is what XGBoost and LightGBM use; they inflate the
+  same diagonal by 2 and by `K / (K - 1)` respectively. The implementation is
+  unchanged, so the multiclass working response is twice XGBoost's and
+  `learning_rate` is a stronger control for multiclass than for binary. This is
+  now stated in MATH.md 4.2.1 and in the `Softmax` docstring.
+
+### Compatibility
+
+- Binary `decision_function` remains shape `(n_samples,)`. Multiclass returns
+  `(n_samples, n_classes)`.
+- `predict_proba` is `(n_samples, n_classes)` for both binary and multiclass.
+- Multiclass `ensemble_` entries are length-`n_classes` lists of scalar
+  learners. Binary and regression ensembles remain one learner per round.
+- Multilabel and multioutput targets still raise `ValueError`.
+- Single-class targets now raise `ValueError` instead of fitting a degenerate
+  model. This supersedes the binary-only tagging described under 1.0.0.
+
+### Packaging and tooling
+
+- Add PyPI classifiers.
+- Ship `LICENSE`, `MATH.md`, and `CONTRIBUTING.md` in the sdist.
+- Add `ruff`, `mypy`, `pytest`, and `coverage` configuration, and run lint and
+  type checks in CI alongside a wider Python test matrix.
+
+## 1.1.0
+
+Release date: 2026-09-01
+
+- Pass original labels to `eval_metric`, including string class names.
+- Accept `eval_sample_weight` for validation loss and early stopping.
+- Add `staged_predict`, `staged_predict_proba`, `staged_decision_function`,
+  and `permutation_importance`.
+
 ## 1.0.1
 
 Release date: 2026-08-30

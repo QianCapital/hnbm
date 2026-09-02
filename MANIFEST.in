@@ -1,6 +1,8 @@
 include README.md
 include CHANGELOG.md
+include CONTRIBUTING.md
+include MATH.md
+include LICENSE
 include requirements.txt
 include Dockerfile
 include hnbm/py.typed
-

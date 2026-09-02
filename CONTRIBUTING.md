@@ -22,13 +22,15 @@ HNBM 1.0 freezes `HNBMClassifier` and `HNBMRegressor`:
   removed in 2.0.
 
 Fitted attributes `ensemble_`, `n_iter_`, `base_score_`, `learner_weights_`,
-`history_`, `best_iteration_`, `n_features_in_`, `feature_names_in_`, and
-`classes_` are part of the 1.0 contract.
+`history_`, `best_iteration_`, `n_features_in_`, `feature_names_in_`,
+`classes_`, and `n_classes_` are part of the 1.0 contract. Multiclass
+`ensemble_` entries are per-class learner lists; binary and regression entries
+remain a single learner.
 
 ## Release checklist
 
 1. Tests pass, including `check_estimator`.
 2. Changelog section is dated (not "staged").
 3. `__version__` matches the GitHub release tag (`v1.x.y`).
-4. SnapBoost pins `hnbm>=1.0` before a SnapBoost 1.x release that depends on
+4. SnapBoost pins `hnbm>=1.2` before a SnapBoost 1.2 release that depends on
    this contract.

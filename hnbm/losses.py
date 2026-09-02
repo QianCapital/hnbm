@@ -47,6 +47,42 @@ class Quantile:
         return np.maximum(quantile * residual, (quantile - 1.0) * residual)
 
 
+class Softmax:
+    """Multinomial logistic loss with a diagonal Hessian.
+
+    Gradients and Hessians are computed from softmax probabilities. The Hessian
+    keeps only the diagonal ``p_k (1 - p_k)`` of the exact
+    ``diag(p) - p p^T``, with no damping factor. XGBoost inflates the same
+    diagonal by 2 and LightGBM by ``K / (K - 1)``, so the working response here
+    is twice XGBoost's; ``learning_rate`` is correspondingly stronger for
+    multiclass than for the binary logistic path. See MATH.md 4.2.1.
+    """
+
+    @staticmethod
+    def probabilities(f):
+        scores = np.asarray(f, dtype=float)
+        shifted = scores - np.max(scores, axis=1, keepdims=True)
+        exp = np.exp(shifted)
+        return exp / np.sum(exp, axis=1, keepdims=True)
+
+    @staticmethod
+    def compute_derivatives(y, f):
+        probability = Softmax.probabilities(f)
+        gradient = probability.copy()
+        gradient[np.arange(y.shape[0]), y] -= 1.0
+        hessian = np.maximum(
+            probability * (1.0 - probability), np.finfo(float).eps
+        )
+        return gradient, hessian
+
+    @staticmethod
+    def compute_loss(y, f):
+        scores = np.asarray(f, dtype=float)
+        shifted = scores - np.max(scores, axis=1, keepdims=True)
+        log_normalizer = np.log(np.sum(np.exp(shifted), axis=1))
+        return log_normalizer - shifted[np.arange(y.shape[0]), y]
+
+
 class Logistic:
     """Logistic loss for binary classification."""
 

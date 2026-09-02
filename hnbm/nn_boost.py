@@ -1,5 +1,5 @@
-from numbers import Integral, Real
 from collections.abc import Sequence
+from numbers import Integral, Real
 
 import numpy as np
 
@@ -128,6 +128,7 @@ class _NNBoostMixin:
     def fit(
         self, X, y, sample_weight=None, eval_set=None,
         eval_metric=None, callbacks=None, candidate_n_jobs=1,
+        *, eval_sample_weight=None,
     ):
         self._validate_nn_boost_params()
         self._build_base_learners()
@@ -139,6 +140,7 @@ class _NNBoostMixin:
             eval_metric=eval_metric,
             callbacks=callbacks,
             candidate_n_jobs=candidate_n_jobs,
+            eval_sample_weight=eval_sample_weight,
         )
 
 
@@ -212,7 +214,7 @@ class NNBoost(_NNBoostMixin, HNBM):
 
 class NNBoostClassifier(_NNBoostMixin, HNBMClassifier):
     """
-    HNBM for binary classification using shallow neural network base learners.
+    HNBM for classification using shallow neural network base learners.
 
     Example
     -------

@@ -1,6 +1,7 @@
-import numpy as np
-from numbers import Integral, Real
 from collections.abc import Sequence
+from numbers import Integral, Real
+
+import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
@@ -239,7 +240,8 @@ class ShallowNNRegressor(BaseEstimator, RegressorMixin):
 
         prev_loss = np.inf
         n_iter = 0
-        for n_iter in range(1, self.max_iter + 1):
+        for _ in range(self.max_iter):
+            n_iter += 1
             y_pred, z_hidden, hidden = self._forward(
                 X_scaled, return_intermediates=True
             )

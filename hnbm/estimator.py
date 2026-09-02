@@ -1,12 +1,13 @@
-import numpy as np
 import copy
+import inspect
 import warnings
 from numbers import Integral, Real
 
-from tqdm import tqdm
+import numpy as np
+from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin, clone
 from sklearn.exceptions import NotFittedError
-from sklearn.metrics import accuracy_score, mean_squared_error, log_loss, r2_score
+from sklearn.metrics import accuracy_score, log_loss, mean_squared_error, r2_score
 from sklearn.utils.metaestimators import available_if
 from sklearn.utils.multiclass import check_classification_targets, type_of_target
 from sklearn.utils.validation import (
@@ -16,9 +17,9 @@ from sklearn.utils.validation import (
     column_or_1d,
     has_fit_parameter,
 )
-from joblib import Parallel, delayed
+from tqdm import tqdm
 
-from .losses import Logistic, MeanSquaredError, PseudoHuber, Quantile
+from .losses import Logistic, MeanSquaredError, PseudoHuber, Quantile, Softmax
 
 
 def _classification_mode(estimator):
@@ -113,6 +114,14 @@ class HNBM(BaseEstimator):
         Minimum validation-loss improvement that resets early-stopping patience.
     subsample : float, default=1.0
         Fraction of training observations used to fit each base learner.
+    objective : str, default='auto'
+        Loss to optimize. Classification accepts ``'auto'`` and ``'log_loss'``,
+        which select logistic loss for binary targets and softmax for
+        multiclass. Regression accepts ``'auto'``, ``'squared_error'``,
+        ``'pseudo_huber'``, and ``'quantile'``.
+    objective_parameter : float or None, default=None
+        Pseudo-Huber delta (default ``1.0``) or the quantile level (default
+        ``0.5``). Ignored by the other objectives.
 
     Attributes
     ----------
@@ -124,12 +133,17 @@ class HNBM(BaseEstimator):
         Candidate base learners (must be set before ``fit``).
     probabilities_ : list
         Selection probabilities for each base learner (must be set before ``fit``).
-    base_score_ : float
+    base_score_ : float or ndarray of shape (n_classes,)
         Optimized constant prediction used before the first boosting round.
+        Multiclass models store one score per class.
+    n_classes_ : int
+        Number of classes. Set only for classification.
     learner_weights_ : list of float
-        Contribution weight stored for every fitted learner.
+        Contribution weight stored for every boosting round.
     history_ : dict
         Per-round training loss, validation loss, and selected learner index.
+        Every list stays aligned with ``ensemble_``, so early stopping also
+        drops the records of the rounds it rolls back.
     best_iteration_ : int
         Best validation iteration, or the final iteration without validation.
         The ensemble is truncated to this iteration only when
@@ -213,7 +227,7 @@ class HNBM(BaseEstimator):
                     tags.classifier_tags = ClassifierTags()
                     classifier_tags = tags.classifier_tags
             if classifier_tags is not None:
-                classifier_tags.multi_class = False
+                classifier_tags.multi_class = True
         elif mode == "regression":
             tags.estimator_type = "regressor"
         self._apply_input_tags(tags)
@@ -228,7 +242,7 @@ class HNBM(BaseEstimator):
 
     def _more_tags(self):
         tags = super()._more_tags()
-        tags["binary_only"] = getattr(self, "mode", None) == "classification"
+        tags["binary_only"] = False
         tags["allow_nan"] = False
         tags["poor_score"] = False
         return tags
@@ -382,6 +396,7 @@ class HNBM(BaseEstimator):
             for attribute in (
                 "ensemble_",
                 "classes_",
+                "n_classes_",
                 "n_features_in_",
                 "feature_names_in_",
                 "n_iter_",
@@ -470,7 +485,7 @@ class HNBM(BaseEstimator):
             return Quantile.compute_derivatives(y, raw_prediction, parameter)
         return self.loss_.compute_derivatives(y, raw_prediction)
 
-    def _initial_prediction(self, y, sample_weight):
+    def _initial_prediction(self, y, sample_weight, n_classes=1):
         if self.mode == "regression":
             if self.objective_ == "quantile":
                 order = np.argsort(y)
@@ -479,29 +494,50 @@ class HNBM(BaseEstimator):
                 threshold = self._resolved_objective_parameter() * cumulative[-1]
                 return float(ordered_y[np.searchsorted(cumulative, threshold)])
             return float(np.average(y, weights=sample_weight))
-        positive = float(np.average(y > 0, weights=sample_weight))
         eps = np.finfo(float).eps
+        if n_classes > 2:
+            priors = np.bincount(
+                y.astype(np.int64, copy=False),
+                weights=sample_weight,
+                minlength=n_classes,
+            ).astype(float)
+            priors /= sample_weight.sum()
+            priors = np.clip(priors, eps, 1.0 - eps)
+            return np.log(priors)
+        positive = float(np.average(y > 0, weights=sample_weight))
         positive = np.clip(positive, eps, 1.0 - eps)
         return float(np.log(positive / (1.0 - positive)))
 
+    @staticmethod
+    def _broadcast_base_score(n_samples, base_score):
+        base = np.asarray(base_score, dtype=float)
+        if base.ndim == 0:
+            return np.full(n_samples, float(base))
+        scores = np.empty((n_samples, base.shape[0]), dtype=float)
+        scores[:] = base
+        return scores
+
     def _fit_candidate(
-        self, prototype, X, target, hessian, iteration, index, sampling_entropy
+        self, prototype, X, target, hessian, iteration, index, sampling_entropy,
+        class_index=None,
     ):
         learner = clone(prototype)
         if hasattr(learner, "random_state") and self.random_state is not None:
-            seed = np.random.SeedSequence(
-                [int(self.random_state), int(iteration), int(index)]
-            ).generate_state(1)[0]
+            seed_payload = [int(self.random_state), int(iteration), int(index)]
+            if class_index is not None:
+                seed_payload.append(int(class_index))
+            seed = np.random.SeedSequence(seed_payload).generate_state(1)[0]
             learner.set_params(random_state=int(seed))
         eligible_rows = np.flatnonzero(hessian > 0)
         if eligible_rows.size == 0:
             raise ValueError("A base learner requires at least one positive weight.")
         if self.subsample < 1.0:
             count = max(1, int(np.ceil(self.subsample * eligible_rows.size)))
+            sampling_key = [int(sampling_entropy), int(iteration), 991]
+            if class_index is not None:
+                sampling_key.append(int(class_index))
             sampling_rng = np.random.default_rng(
-                np.random.SeedSequence(
-                    [int(sampling_entropy), int(iteration), 991]
-                )
+                np.random.SeedSequence(sampling_key)
             )
             rows = sampling_rng.choice(eligible_rows, size=count, replace=False)
         elif eligible_rows.size != X.shape[0]:
@@ -519,6 +555,66 @@ class HNBM(BaseEstimator):
             raise FloatingPointError("Base learner predictions became non-finite.")
         return learner, prediction
 
+    def _fit_round(
+        self, prototype, X, newton_target, fit_weight, iteration, index,
+        sampling_entropy,
+    ):
+        if newton_target.ndim == 1:
+            return self._fit_candidate(
+                prototype,
+                X,
+                newton_target,
+                fit_weight,
+                iteration,
+                index,
+                sampling_entropy,
+            )
+        learners = []
+        predictions = []
+        for class_index in range(newton_target.shape[1]):
+            learner, prediction = self._fit_candidate(
+                prototype,
+                X,
+                newton_target[:, class_index],
+                fit_weight[:, class_index],
+                iteration,
+                index,
+                sampling_entropy,
+                class_index=class_index,
+            )
+            learners.append(learner)
+            predictions.append(prediction)
+        return learners, np.column_stack(predictions)
+
+    @staticmethod
+    def _round_predict(round_entry, X):
+        if not isinstance(round_entry, (list, tuple)):
+            return np.asarray(round_entry.predict(X), dtype=float)
+        return np.column_stack(
+            [
+                np.asarray(learner.predict(X), dtype=float)
+                for learner in round_entry
+            ]
+        )
+
+    def _fit_and_score_candidate(
+        self, index, *, X, y, z, newton_target, fit_weight, sample_weight,
+        iteration, sampling_entropy,
+    ):
+        """Fit one candidate family and score the update it would apply."""
+        round_entry, prediction = self._fit_round(
+            self.base_learners_[index],
+            X,
+            newton_target,
+            fit_weight,
+            iteration,
+            index,
+            sampling_entropy,
+        )
+        step = self._choose_step(y, z, prediction, sample_weight)
+        loss = self._loss_value(y, z + step * prediction, sample_weight)
+        return loss, index, round_entry, prediction, step
+
     def _choose_step(self, y, z, prediction, sample_weight):
         if not self.line_search:
             return float(self.learning_rate)
@@ -532,6 +628,7 @@ class HNBM(BaseEstimator):
     def fit(
         self, X, y, sample_weight=None, eval_set=None,
         eval_metric=None, callbacks=None, candidate_n_jobs=1,
+        *, eval_sample_weight=None,
     ):
         """
         Train the model.
@@ -548,21 +645,50 @@ class HNBM(BaseEstimator):
             Optional validation pair used for history and early stopping.
         eval_metric : callable, default=None
             Optional ``metric(y, raw_prediction) -> float`` recorded per round.
+            ``y`` is the original label vector, not the internal Newton encoding.
         callbacks : iterable of callable, default=None
             Functions called with a per-round state dictionary. Returning a
-            truthy value requests an orderly stop after the current round.
+            truthy value requests an orderly stop after the current round. The
+            round that triggers early stopping is reported too, before the
+            ensemble is rolled back to ``best_iteration_``.
         candidate_n_jobs : int, default=1
             Threads used to fit greedy candidates. Has no effect for random
             selection. ``-1`` uses all available logical CPUs.
+        eval_sample_weight : array-like of shape (n_eval,), default=None
+            Non-negative weights for ``eval_set``. Requires ``eval_set``.
 
         Returns
         -------
         self
         """
+        try:
+            return self._fit(
+                X,
+                y,
+                sample_weight=sample_weight,
+                eval_set=eval_set,
+                eval_metric=eval_metric,
+                callbacks=callbacks,
+                candidate_n_jobs=candidate_n_jobs,
+                eval_sample_weight=eval_sample_weight,
+            )
+        finally:
+            # ``loss_`` reads this while fitting, before ``n_classes_`` exists.
+            # Clearing it here keeps a failed fit from changing the loss
+            # reported by an estimator that was already fitted.
+            self.__dict__.pop("_active_n_classes", None)
+
+    def _fit(
+        self, X, y, sample_weight=None, eval_set=None,
+        eval_metric=None, callbacks=None, candidate_n_jobs=1,
+        *, eval_sample_weight=None,
+    ):
         self._validate_current_params()
         probabilities = self._validate_learner_pool()
         if eval_metric is not None and not callable(eval_metric):
             raise TypeError("eval_metric must be callable or None.")
+        if eval_sample_weight is not None and eval_set is None:
+            raise ValueError("eval_sample_weight requires eval_set.")
         callbacks = () if callbacks is None else tuple(callbacks)
         if any(not callable(callback) for callback in callbacks):
             raise TypeError("Every callback must be callable.")
@@ -576,21 +702,36 @@ class HNBM(BaseEstimator):
         feature_names = _extract_feature_names(X)
         X, y = _validate_X_y(X, y)
         sample_weight = self._validate_sample_weight(sample_weight, X.shape[0])
+        n_classes = 1
+        classes = None
         if self.mode == "classification":
             check_classification_targets(y)
             try:
                 y_type = type_of_target(y, input_name="y")
             except TypeError:
                 y_type = type_of_target(y)
-            if y_type != "binary":
+            if y_type not in ("binary", "multiclass"):
                 raise ValueError(
-                    "Only binary classification is supported. The type of the "
-                    f"target is {y_type}."
+                    "Only binary and multiclass classification are supported. "
+                    f"The type of the target is {y_type}."
                 )
-            classes = np.unique(y)
-            y = np.where(y == classes[0], -1.0, 1.0)
+            classes, encoded = np.unique(y, return_inverse=True)
+            n_classes = int(classes.size)
+            if n_classes < 2:
+                raise ValueError(
+                    f"y contains only one class ({classes.tolist()[0]!r}). "
+                    "Classification requires at least 2 classes."
+                )
+            y_metric = y
+            if n_classes == 2:
+                y = np.where(y == classes[0], -1.0, 1.0)
+            else:
+                y = encoded.astype(np.int64, copy=False)
+            self._active_n_classes = n_classes
         else:
             y = check_array(y, ensure_2d=False, dtype=float)
+            y_metric = y
+            self.__dict__.pop("_active_n_classes", None)
 
         if eval_set is not None:
             if not isinstance(eval_set, (tuple, list)) or len(eval_set) != 2:
@@ -598,7 +739,9 @@ class HNBM(BaseEstimator):
             eval_feature_names = _extract_feature_names(eval_set[0])
             X_eval, y_eval_original = _validate_X_y(*eval_set)
             if X_eval.shape[1] != X.shape[1]:
-                raise ValueError("Training and validation data must have equal features.")
+                raise ValueError(
+                    "Training and validation data must have equal features."
+                )
             if (
                 feature_names is not None
                 and eval_feature_names is not None
@@ -617,11 +760,20 @@ class HNBM(BaseEstimator):
                 unknown = np.setdiff1d(np.unique(y_eval_original), classes)
                 if unknown.size:
                     raise ValueError("eval_set contains an unknown class label.")
-                y_eval = np.where(y_eval_original == classes[0], -1.0, 1.0)
+                y_eval_metric = y_eval_original
+                if n_classes == 2:
+                    y_eval = np.where(y_eval_original == classes[0], -1.0, 1.0)
+                else:
+                    y_eval = np.searchsorted(classes, y_eval_original)
             else:
                 y_eval = check_array(y_eval_original, ensure_2d=False, dtype=float)
+                y_eval_metric = y_eval
+            eval_sample_weight = self._validate_sample_weight(
+                eval_sample_weight, X_eval.shape[0]
+            )
         else:
-            X_eval = y_eval = None
+            X_eval = y_eval = y_eval_metric = None
+            eval_sample_weight = None
 
         rng = np.random.default_rng(self.random_state)
         sampling_entropy = (
@@ -629,9 +781,13 @@ class HNBM(BaseEstimator):
             if self.random_state is not None
             else int(np.random.SeedSequence().entropy)
         )
-        base_score = self._initial_prediction(y, sample_weight)
-        z = np.full(X.shape[0], base_score)
-        z_eval = None if X_eval is None else np.full(X_eval.shape[0], base_score)
+        base_score = self._initial_prediction(y, sample_weight, n_classes=n_classes)
+        z = self._broadcast_base_score(X.shape[0], base_score)
+        z_eval = (
+            None
+            if X_eval is None
+            else self._broadcast_base_score(X_eval.shape[0], base_score)
+        )
         fitted_learners = []
         learner_weights = []
         history = {
@@ -652,40 +808,38 @@ class HNBM(BaseEstimator):
         for iteration in iterations:
             g, h = self._compute_derivatives(y, z)
             newton_target = -np.divide(g, h)
-            fit_weight = h * sample_weight
+            if newton_target.ndim == 1:
+                fit_weight = h * sample_weight
+            else:
+                fit_weight = h * sample_weight[:, np.newaxis]
             if not np.all(np.isfinite(newton_target)):
                 raise FloatingPointError("Newton targets became non-finite.")
             if self.selection_strategy == "greedy":
                 eligible_candidates = np.flatnonzero(probabilities > 0)
-
-                def fit_and_score(idx):
-                    prototype = self.base_learners_[idx]
-                    learner, prediction = self._fit_candidate(
-                        prototype,
-                        X,
-                        newton_target,
-                        fit_weight,
-                        iteration,
-                        idx,
-                        sampling_entropy,
-                    )
-                    step = self._choose_step(y, z, prediction, sample_weight)
-                    loss = self._loss_value(y, z + step * prediction, sample_weight)
-                    return loss, idx, learner, prediction, step
-
                 candidates = Parallel(
                     n_jobs=candidate_n_jobs,
                     prefer="threads",
                 )(
-                    delayed(fit_and_score)(idx) for idx in eligible_candidates
+                    delayed(self._fit_and_score_candidate)(
+                        idx,
+                        X=X,
+                        y=y,
+                        z=z,
+                        newton_target=newton_target,
+                        fit_weight=fit_weight,
+                        sample_weight=sample_weight,
+                        iteration=iteration,
+                        sampling_entropy=sampling_entropy,
+                    )
+                    for idx in eligible_candidates
                 )
-                _, idx, base_learner, learner_prediction, step = min(
+                _, idx, round_entry, learner_prediction, step = min(
                     candidates, key=lambda item: item[0]
                 )
                 idx = int(idx)
             else:
                 idx = int(rng.choice(len(self.base_learners_), p=probabilities))
-                base_learner, learner_prediction = self._fit_candidate(
+                round_entry, learner_prediction = self._fit_round(
                     self.base_learners_[idx],
                     X,
                     newton_target,
@@ -699,7 +853,7 @@ class HNBM(BaseEstimator):
             if not np.all(np.isfinite(candidate_z)):
                 raise FloatingPointError("Boosting predictions became non-finite.")
             z = candidate_z
-            fitted_learners.append(base_learner)
+            fitted_learners.append(round_entry)
             learner_weights.append(step)
             history["learner_index"].append(idx)
             history["learner_weight"].append(step)
@@ -707,17 +861,19 @@ class HNBM(BaseEstimator):
                 self._loss_value(y, z, sample_weight)
             )
             if eval_metric is not None:
-                metric = float(eval_metric(y, z))
+                metric = float(eval_metric(y_metric, z))
                 if not np.isfinite(metric):
                     raise FloatingPointError("Training metric became non-finite.")
                 history["training_metric"].append(metric)
+            stop_early = False
             if X_eval is not None:
-                eval_prediction = np.asarray(
-                    base_learner.predict(X_eval), dtype=float
-                )
+                eval_prediction = self._round_predict(round_entry, X_eval)
                 if eval_prediction.shape != z_eval.shape:
+                    learner_name = type(
+                        round_entry[0] if isinstance(round_entry, list) else round_entry
+                    ).__name__
                     raise ValueError(
-                        f"Base learner {type(base_learner).__name__} returned "
+                        f"Base learner {learner_name} returned "
                         f"validation shape {eval_prediction.shape}; expected "
                         f"{z_eval.shape}."
                     )
@@ -726,10 +882,12 @@ class HNBM(BaseEstimator):
                         "Base learner validation predictions became non-finite."
                     )
                 z_eval += step * eval_prediction
-                validation_loss = self._loss_value(y_eval, z_eval)
+                validation_loss = self._loss_value(
+                    y_eval, z_eval, eval_sample_weight
+                )
                 history["validation_loss"].append(validation_loss)
                 if eval_metric is not None:
-                    metric = float(eval_metric(y_eval, z_eval))
+                    metric = float(eval_metric(y_eval_metric, z_eval))
                     if not np.isfinite(metric):
                         raise FloatingPointError(
                             "Validation metric became non-finite."
@@ -741,13 +899,10 @@ class HNBM(BaseEstimator):
                     rounds_without_improvement = 0
                 else:
                     rounds_without_improvement += 1
-                if (
+                stop_early = (
                     self.early_stopping_rounds is not None
                     and rounds_without_improvement >= self.early_stopping_rounds
-                ):
-                    fitted_learners = fitted_learners[:best_size]
-                    learner_weights = learner_weights[:best_size]
-                    break
+                )
             callback_state = {
                 "estimator": self,
                 "iteration": iteration,
@@ -759,7 +914,16 @@ class HNBM(BaseEstimator):
                     if history["validation_loss"] else None
                 ),
             }
+            # Callbacks observe the round that triggered early stopping before
+            # it is rolled back, so a callback accumulating per-round state sees
+            # every round that was actually fitted.
             callback_results = [callback(callback_state) for callback in callbacks]
+            if stop_early:
+                fitted_learners = fitted_learners[:best_size]
+                learner_weights = learner_weights[:best_size]
+                for recorded in history.values():
+                    del recorded[best_size:]
+                break
             if any(callback_results):
                 break
 
@@ -778,6 +942,7 @@ class HNBM(BaseEstimator):
             self.feature_names_in_ = feature_names
         if self.mode == "classification":
             self.classes_ = classes
+            self.n_classes_ = n_classes
 
         return self
 
@@ -787,7 +952,14 @@ class HNBM(BaseEstimator):
             return PseudoHuber
         if self.objective_ == "quantile":
             return Quantile
-        return Logistic if self.mode == "classification" else MeanSquaredError
+        if self.mode == "classification":
+            n_classes = getattr(
+                self, "_active_n_classes", getattr(self, "n_classes_", 2)
+            )
+            if n_classes > 2:
+                return Softmax
+            return Logistic
+        return MeanSquaredError
 
     @property
     def num_iterations_(self):
@@ -797,8 +969,8 @@ class HNBM(BaseEstimator):
     def learning_rate_(self):
         return self.learning_rate
 
-    def _raw_predict(self, X):
-        """Return raw model output for classification or regression."""
+    def _validate_predict_input(self, X):
+        """Validate prediction features and return a dense float array."""
         self._check_fitted()
         self._check_feature_names(X)
         X = _validate_X(X)
@@ -807,23 +979,82 @@ class HNBM(BaseEstimator):
                 f"X has {X.shape[1]} features, but {type(self).__name__} is "
                 f"expecting {self.n_features_in_} features as input."
             )
-        preds = np.full(X.shape[0], getattr(self, "base_score_", 0.0))
-        weights = getattr(
+        return X
+
+    def _learner_contribution_weights(self):
+        return getattr(
             self, "learner_weights_", [self.learning_rate] * len(self.ensemble_)
         )
-        for learner, weight in zip(self.ensemble_, weights):
-            learner_prediction = np.asarray(learner.predict(X), dtype=float)
-            if learner_prediction.shape != preds.shape:
-                raise ValueError(
-                    f"Base learner {type(learner).__name__} returned shape "
-                    f"{learner_prediction.shape}; expected {preds.shape}."
-                )
-            if not np.all(np.isfinite(learner_prediction)):
-                raise FloatingPointError("Base learner predictions became non-finite.")
-            preds += weight * learner_prediction
+
+    def _accumulate_learner(self, preds, learner, weight, X):
+        learner_prediction = np.asarray(learner.predict(X), dtype=float)
+        if learner_prediction.shape != preds.shape:
+            raise ValueError(
+                f"Base learner {type(learner).__name__} returned shape "
+                f"{learner_prediction.shape}; expected {preds.shape}."
+            )
+        if not np.all(np.isfinite(learner_prediction)):
+            raise FloatingPointError("Base learner predictions became non-finite.")
+        preds = preds + weight * learner_prediction
         if not np.all(np.isfinite(preds)):
             raise FloatingPointError("Ensemble predictions became non-finite.")
         return preds
+
+    def _raw_predict(self, X):
+        """Return raw model output for classification or regression."""
+        X = self._validate_predict_input(X)
+        preds = self._broadcast_base_score(
+            X.shape[0], getattr(self, "base_score_", 0.0)
+        )
+        for round_entry, weight in zip(
+            self.ensemble_, self._learner_contribution_weights()
+        ):
+            preds = self._apply_round_update(preds, round_entry, weight, X)
+        return preds
+
+    def _apply_round_update(self, preds, round_entry, weight, X):
+        if preds.ndim == 1:
+            return self._accumulate_learner(preds, round_entry, weight, X)
+        if not isinstance(round_entry, (list, tuple)):
+            raise ValueError(
+                "Multiclass ensembles store one fitted learner per class."
+            )
+        if len(round_entry) != preds.shape[1]:
+            raise ValueError(
+                f"Base learner round has {len(round_entry)} class models; "
+                f"expected {preds.shape[1]}."
+            )
+        for class_index, learner in enumerate(round_entry):
+            preds[:, class_index] = self._accumulate_learner(
+                preds[:, class_index], learner, weight, X
+            )
+        return preds
+
+    def _staged_raw_predict(self, X):
+        """Yield raw predictions after each boosting round."""
+        X = self._validate_predict_input(X)
+        preds = self._broadcast_base_score(
+            X.shape[0], getattr(self, "base_score_", 0.0)
+        )
+        for round_entry, weight in zip(
+            self.ensemble_, self._learner_contribution_weights()
+        ):
+            preds = self._apply_round_update(preds, round_entry, weight, X)
+            yield preds.copy()
+
+    def _labels_from_logits(self, logits):
+        logits = np.asarray(logits)
+        if logits.ndim == 1:
+            return self.classes_[(logits >= 0).astype(int)]
+        return self.classes_[np.argmax(logits, axis=1)]
+
+    @staticmethod
+    def _proba_from_logits(logits):
+        scores = np.asarray(logits, dtype=float)
+        if scores.ndim == 1:
+            prob_pos = np.exp(-np.logaddexp(0.0, -scores))
+            return np.column_stack([1.0 - prob_pos, prob_pos])
+        return Softmax.probabilities(scores)
 
     def compact(self, min_abs_weight=0.0, inplace=False):
         """Optionally remove learners with negligible contribution weights.
@@ -857,9 +1088,77 @@ class HNBM(BaseEstimator):
         target.n_iter_ = len(target.ensemble_)
         return target
 
+    def staged_predict(self, X):
+        """Yield predictions after each boosting round.
+
+        The first value includes the first fitted learner. The last value
+        matches :meth:`predict`.
+        """
+        if self.mode == "classification":
+            self._check_fitted()
+            for logits in self._staged_raw_predict(X):
+                yield self._labels_from_logits(logits)
+            return
+        yield from self._staged_raw_predict(X)
+
+    @available_if(_classification_mode)
+    def staged_decision_function(self, X):
+        """Yield classification logits after each boosting round."""
+        if self.mode != "classification":
+            raise ValueError(
+                "staged_decision_function is only available in classification mode."
+            )
+        yield from self._staged_raw_predict(X)
+
+    @available_if(_classification_mode)
+    def staged_predict_proba(self, X):
+        """Yield class probabilities after each boosting round."""
+        if self.mode != "classification":
+            raise ValueError(
+                "staged_predict_proba is only available in classification mode."
+            )
+        for logits in self._staged_raw_predict(X):
+            yield self._proba_from_logits(logits)
+
+    def permutation_importance(
+        self,
+        X,
+        y,
+        *,
+        n_repeats=5,
+        random_state=None,
+        scoring=None,
+        n_jobs=None,
+        sample_weight=None,
+        max_samples=1.0,
+    ):
+        """Permutation importance of the original features.
+
+        This is the right importance measure for mixed tree and smooth learners.
+        It returns the :func:`sklearn.inspection.permutation_importance` result.
+        """
+        from sklearn.inspection import permutation_importance as sklearn_importance
+
+        self._check_fitted()
+        kwargs = {
+            "n_repeats": n_repeats,
+            "random_state": random_state,
+            "scoring": scoring,
+            "n_jobs": n_jobs,
+            "sample_weight": sample_weight,
+        }
+        parameters = inspect.signature(sklearn_importance).parameters
+        if "max_samples" in parameters:
+            kwargs["max_samples"] = max_samples
+        return sklearn_importance(self, X, y, **kwargs)
+
     @available_if(_classification_mode)
     def decision_function(self, X):
-        """Return classification logits."""
+        """Return classification logits.
+
+        Binary models return shape ``(n_samples,)``. Multiclass models return
+        shape ``(n_samples, n_classes)``.
+        """
         if self.mode != "classification":
             raise ValueError(
                 "decision_function is only available in classification mode."
@@ -870,11 +1169,11 @@ class HNBM(BaseEstimator):
         """
         Predict using the model.
 
-        Classification returns 0/1 labels; regression returns continuous values.
+        Classification returns labels from ``classes_``; regression returns
+        continuous values.
         """
         if self.mode == "classification":
-            logits = self.decision_function(X)
-            return self.classes_[(logits >= 0).astype(int)]
+            return self._labels_from_logits(self.decision_function(X))
         return self._raw_predict(X)
 
     @available_if(_classification_mode)
@@ -884,14 +1183,12 @@ class HNBM(BaseEstimator):
 
         Returns
         -------
-        ndarray of shape (n_samples, 2)
-            Probabilities ``[P(y=0), P(y=1)]``.
+        ndarray of shape (n_samples, n_classes)
+            Probabilities in ``classes_`` order.
         """
         if self.mode != "classification":
             raise ValueError("predict_proba is only available in classification mode.")
-        logits = self.decision_function(X)
-        prob_pos = np.exp(-np.logaddexp(0.0, -logits))
-        return np.column_stack([1.0 - prob_pos, prob_pos])
+        return self._proba_from_logits(self.decision_function(X))
 
     def score(self, X, y):
         """Return accuracy (classification) or R² (regression)."""
@@ -909,19 +1206,23 @@ class HNBM(BaseEstimator):
             _, y = _validate_X_y(X, y)
             probabilities = self.predict_proba(X)
             loss = log_loss(y, probabilities, labels=self.classes_)
-            print("Log Loss: %.4f" % loss)
+            print(f"Log Loss: {loss:.4f}")
         else:
             _, y = _validate_X_y(X, y)
             y = check_array(y, ensure_2d=False, dtype=float)
             preds = self._raw_predict(X)
             loss = np.sqrt(mean_squared_error(y, preds))
-            print("RMSE: %.4f" % loss)
+            print(f"RMSE: {loss:.4f}")
         return loss
 
 
 class HNBMClassifier(ClassifierMixin, HNBM):
     """
-    Heterogeneous Newton Boosting Machine for binary classification.
+    Heterogeneous Newton Boosting Machine for classification.
+
+    Binary targets use logistic loss with a scalar raw score. Multiclass
+    targets use softmax Newton boosting with one scalar learner per class
+    in each boosting round.
 
     Subclass ``HNBMClassifier`` and configure ``base_learners_`` and
     ``probabilities_`` before calling ``fit``.
@@ -946,6 +1247,19 @@ class HNBMClassifier(ClassifierMixin, HNBM):
         Minimum validation improvement.
     subsample : float, default=1.0
         Fraction of training rows used by each learner.
+    objective : {'auto', 'log_loss'}, default='auto'
+        Loss to optimize. Both values select logistic loss for binary targets
+        and softmax for multiclass targets.
+    objective_parameter : float or None, default=None
+        Unused for classification. Present so classifiers and regressors share
+        one constructor surface.
+
+    Attributes
+    ----------
+    classes_ : ndarray of shape (n_classes,)
+        Sorted class labels seen during ``fit``.
+    n_classes_ : int
+        Number of classes seen during ``fit``.
     """
     _mode = "classification"
 
@@ -953,7 +1267,7 @@ class HNBMClassifier(ClassifierMixin, HNBM):
         tags = super().__sklearn_tags__()
         classifier_tags = getattr(tags, "classifier_tags", None)
         if classifier_tags is not None:
-            classifier_tags.multi_class = False
+            classifier_tags.multi_class = True
         self._apply_input_tags(tags)
         return tags
 
@@ -1019,6 +1333,11 @@ class HNBMRegressor(RegressorMixin, HNBM):
         Minimum validation improvement.
     subsample : float, default=1.0
         Fraction of training rows used by each learner.
+    objective : {'auto', 'squared_error', 'pseudo_huber', 'quantile'}, default='auto'
+        Loss to optimize. ``'auto'`` selects ``'squared_error'``.
+    objective_parameter : float or None, default=None
+        Pseudo-Huber delta (default ``1.0``) or the quantile level (default
+        ``0.5``). Ignored by the other objectives.
     """
     _mode = "regression"
 

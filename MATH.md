@@ -27,6 +27,10 @@ $$
 F_M(x)=F_0+\sum_{m=1}^{M}\eta_m f_m(x).
 $$
 
+$F(x)$ is a scalar for regression and binary classification. For multiclass
+classification it is a $K$-vector of class scores, and each $f_m$ is a stack
+of $K$ scalar learners from the same hypothesis class.
+
 Unlike a homogeneous booster, HNBM has a pool of hypothesis subclasses
 
 $$
@@ -119,7 +123,10 @@ optimization and arbitrary base learners:
 
 The repository implements these quantities directly as
 `newton_target = -g / h` and
-`fit_weight = h * sample_weight`.
+`fit_weight = h * sample_weight`. When $F$ is vector-valued, as in
+multiclass softmax, the same completing-the-square argument is applied
+coordinate-wise after replacing the full Hessian with its diagonal; see
+§4.2.1.
 
 ### 3.2 Ensemble update and shrinkage
 
@@ -213,6 +220,248 @@ $$
 P(y=+1\mid x)=\sigma(F_M(x)).
 $$
 
+### 4.2.1 Multiclass softmax classification
+
+For $K>2$ observed classes the raw score is a vector $F(x)\in\mathbb{R}^K$.
+Integer labels are mapped internally to codes $y\in\{0,\ldots,K-1\}$. Softmax
+probabilities are
+
+$$
+p_k=\mathrm{softmax}(F)_k
+=\frac{e^{F_k}}{\sum_{j=1}^{K}e^{F_j}},
+\qquad k=1,\ldots,K.
+$$
+
+(The implementation indexes classes from $0$ through $K-1$; the mathematics is
+the same.) With a one-hot vector $y\in\{0,1\}^K$ the multinomial loss is
+
+$$
+\ell(y,F)=-\sum_{k=1}^{K}y_k\log p_k=-\log p_{y}.
+$$
+
+Equivalently, with the log-partition function $Z=\sum_j e^{F_j}$,
+
+$$
+\ell(y,F)=\log Z-F_{y},
+\qquad
+\nabla_F\log Z=p,
+\qquad
+\nabla_F^2\log Z=H.
+$$
+
+Softmax is translation-invariant,
+$\mathrm{softmax}(F+c\mathbf{1})=\mathrm{softmax}(F)$. This repository keeps
+all $K$ scores, matching XGBoost and LightGBM, rather than reducing to $K-1$
+free coordinates.
+
+Writing $Z=\sum_j e^{F_j}$, the softmax Jacobian is
+
+$$
+\frac{\partial p_k}{\partial F_j}=p_k(\delta_{kj}-p_j).
+$$
+
+The chain rule on $\ell=-\log p_{y}$ is
+
+$$
+\frac{\partial\ell}{\partial F_k}
+=-\frac1{p_{y}}\frac{\partial p_{y}}{\partial F_k}
+=-(\delta_{yk}-p_k)
+=p_k-\mathbf{1}_{\{k=y\}},
+$$
+
+and a second derivative produces $H_{kj}=p_k(\delta_{kj}-p_j)$ as below. For a
+vector correction $q\in\mathbb{R}^K$ the second-order expansion is
+
+$$
+\ell(y,F+q)
+\approx\ell(y,F)+g^\top q+\frac12 q^\top H q.
+$$
+
+The exact Hessian has the form $H=\mathrm{diag}(p)-pp^\top$. If $e$ is a
+one-hot draw from $\mathrm{Categorical}(p)$, then $H=\mathrm{Cov}(e)$,
+$H_{kk}=\mathrm{Var}(e_k)=p_k(1-p_k)$, and $H_{kj}=-\,p_kp_j$ for $k\neq j$.
+Hence
+
+$$
+H\mathbf{1}=0,
+\qquad \mathrm{rank}(H)=K-1,
+\qquad H\succeq0,
+\qquad \ker H=\mathrm{span}\{\mathbf{1}\}.
+$$
+
+The gradient is orthogonal to the same direction,
+
+$$
+\mathbf{1}^\top g=\sum_k(p_k-\mathbf{1}_{\{k=y\}})=0,
+$$
+
+so $g\in\mathrm{range}(H)$ and a full Newton system $Hq=-g$ is consistent but
+singular without a gauge constraint on $q$. Differentiating with respect to the
+scores gives the gradient
+
+$$
+g_k=\frac{\partial\ell}{\partial F_k}=p_k-\mathbf{1}_{\{k=y\}}
+$$
+
+and the exact per-observation Hessian
+
+$$
+H_{kj}=\frac{\partial^2\ell}{\partial F_k\partial F_j}
+=p_k\bigl(\delta_{kj}-p_j\bigr).
+$$
+
+A full Newton step would invert this $K\times K$ matrix at every sample. The
+base learners here are scalar regressors, so the implementation keeps only the
+diagonal,
+
+$$
+h_k=H_{kk}=p_k(1-p_k),
+\qquad
+h_k\leftarrow\max(h_k,\varepsilon).
+$$
+
+XGBoost and LightGBM take the same diagonal but inflate it by a constant factor
+greater than one before dividing: XGBoost uses $2p_k(1-p_k)$ and LightGBM uses
+$\tfrac{K}{K-1}p_k(1-p_k)$. That factor is damping rather than a derivative.
+The bare diagonal is not an upper bound on $H$, because
+
+$$
+\mathrm{diag}(h)-H=pp^\top-\mathrm{diag}(p)^2
+$$
+
+has a zero diagonal and non-negative off-diagonal entries, so it is indefinite
+whenever at least two classes carry mass. Inflating $h$ buys a margin against
+that truncation error.
+
+This repository uses the undamped diagonal, which has two consequences worth
+knowing when transferring hyperparameters. The multiclass working response
+$r_k=-g_k/h_k$ is exactly twice XGBoost's and $\tfrac{2(K-1)}{K}$ times
+LightGBM's, so a given `learning_rate` takes a correspondingly longer step.
+And because the binary logistic loss of §4.2 uses $h=p(1-p)$ as the exact
+scalar second derivative rather than as a truncation, `learning_rate` is a
+stronger control in the multiclass path than in the binary path of this same
+library. Multiclass runs should be tuned with a smaller `learning_rate`, or
+guarded with `early_stopping_rounds`, rather than reusing binary settings.
+
+That diagonal surrogate makes the quadratic separable,
+
+$$
+g^\top q+\frac12 q^\top H q
+\approx\sum_{k=1}^{K}\Bigl(g_k q_k+\frac12 h_k q_k^2\Bigr),
+$$
+
+so each class is an independent weighted regression. The discarded
+off-diagonal remainder of the exact quadratic is
+
+$$
+\frac12 q^\top\bigl(H-\mathrm{diag}(h)\bigr)q
+=-\frac12\sum_{k\neq j}p_k p_j q_k q_j.
+$$
+
+Completing the square on each diagonal term recovers the scalar identity of
+§3.1,
+
+$$
+g_k q_k+\frac12 h_k q_k^2
+=\frac12 h_k\Bigl(q_k+\frac{g_k}{h_k}\Bigr)^2
+-\frac{g_k^2}{2h_k},
+$$
+
+so the unrestricted diagonal Newton step is $q_k=r_k=-g_k/h_k$. As in binary
+logistic loss, $\varepsilon$ is machine epsilon. With that diagonal Hessian,
+the Newton working response is
+
+$$
+r_k=-\frac{g_k}{h_k}
+=\frac{\mathbf{1}_{\{k=y\}}-p_k}{p_k(1-p_k)}
+=
+\begin{cases}
+1/p_{y}, & k=y,\\
+-1/(1-p_k), & k\neq y.
+\end{cases}
+$$
+
+Because $0\leq p_k(1-p_k)\leq 1/4$, confidently predicted classes have small
+$h_k$ and therefore small fitting weight, as in binary logistic loss.
+Observation $i$ is fit for class $k$ with effective weight
+$\widetilde w_{i,k}=w_i h_{i,k}$. If
+
+$$
+\widehat p_k=\frac{\sum_i w_i\mathbf{1}_{\{y_i=k\}}}{\sum_i w_i},
+$$
+
+the initial score is the clipped log prior
+
+$$
+F_{0,k}=\log\widehat p_k,
+\qquad
+\widehat p_k\leftarrow
+\min\bigl(\max(\widehat p_k,\varepsilon),1-\varepsilon\bigr).
+$$
+
+Without clipping, $\mathrm{softmax}(\log\widehat p)=\widehat p$, so the constant
+initializer matches the class prior. Clipping keeps $\log\widehat p_k$ finite
+when a class is absent from a weighted subsample.
+
+At boosting round $m$, one learner family $\mathcal H_{k_m}$ is sampled or
+selected greedily. Then, independently for each class $k$,
+
+$$
+f_{m,k}\in\arg\min_{f\in\mathcal H_{k_m}}
+\sum_{i=1}^{n}w_i h_{i,k}\bigl(r_{i,k}-f(x_i)\bigr)^2.
+$$
+
+Trees, RFF ridge, linear models, and neural nets all solve this same scalar
+weighted problem in $(r_{\cdot,k},h_{\cdot,k})$; only the hypothesis class
+changes.
+
+A single shrinkage $\eta_m$ is applied to every class,
+
+$$
+F_{m,k}(x)=F_{m-1,k}(x)+\eta_m f_{m,k}(x).
+$$
+
+With `line_search=True`, the shared step is chosen from the same discrete grid
+as in the scalar case,
+
+$$
+\eta_m\in\arg\min_{\eta\in\eta\{0.25,0.5,1,1.5,2\}}
+\sum_i w_i\ell\bigl(y_i,F_{m-1}(x_i)+\eta f_m(x_i)\bigr),
+$$
+
+where $f_m(x)\in\mathbb{R}^K$ stacks the $K$ class corrections. Predicted
+probabilities and labels are
+
+$$
+P(y=k\mid x)=\mathrm{softmax}(F_M(x))_k,
+\qquad
+\hat y(x)=\arg\max_k F_{M,k}(x)
+=\arg\max_k P(y=k\mid x).
+$$
+
+The two argmaxima coincide because softmax is strictly monotone in each
+coordinate relative to the others. Binary problems keep the scalar logistic
+path of §4.2 so that `decision_function` remains one-dimensional. For $K=2$,
+softmax on a pair of scores is equivalent to a sigmoid of their difference,
+
+$$
+\frac{e^{F_1}}{e^{F_0}+e^{F_1}}=\sigma(F_1-F_0),
+$$
+
+which is why the binary path stores a single log-odds $F$ instead of two
+class scores.
+
+Direct $e^{F_k}$ overflows for large scores. The implementation evaluates a
+stable softmax by subtracting the coordinate-wise maximum
+$m(x)=\max_j F_j(x)$,
+
+$$
+p_k=\frac{e^{F_k-m}}{\sum_j e^{F_j-m}},
+\qquad
+\ell(y,F)=m+\log\sum_j e^{F_j-m}-F_y
+=\mathrm{logsumexp}(F)-F_y.
+$$
+
 ### 4.3 Pseudo-Huber regression
 
 For residual $e=F-y$ and scale $\delta>0$,
@@ -231,6 +480,21 @@ $$
 Large residuals have low curvature and therefore low effective fitting weight,
 providing smooth robustness to outliers. The implementation floors $h$ at
 machine epsilon and uses the weighted mean as $F_0$.
+
+**$\delta$ must be chosen on the scale of the residuals.** The Newton working
+response is
+
+$$
+z=-\frac{g}{h}=-e\left(1+(e/\delta)^2\right),
+$$
+
+which grows like $e^3/\delta^2$ once $\lvert e\rvert\gg\delta$. With the
+default $\delta=1$ and a target whose residuals are of order $10^2$, the very
+first working response is of order $10^6$, and boosting diverges rather than
+converges. Standardize the target or set `objective_parameter` to roughly the
+residual scale (a robust spread estimate of $y$ is a good starting point).
+This mirrors the `huber_slope` parameter in XGBoost's
+`reg:pseudohubererror`.
 
 ### 4.4 Quantile regression
 
@@ -277,6 +541,11 @@ of functional corrections. The
 probabilities encode how frequently each inductive bias receives an
 opportunity to approximate the Newton direction.
 
+For multiclass targets the sampled family $K_m$ is fit once per class, so round
+$m$ contributes the stack $(f_{m,K_m}^{(1)},\ldots,f_{m,K_m}^{(C)})$ described
+in §4.2.1. One family is drawn per round, not one per class, so every class
+receives a correction from the same inductive bias in a given round.
+
 If all $\mathcal H_k$ are identical, HNBM reduces to a randomized realization
 of homogeneous Newton boosting. If $K=1$, it reduces to ordinary Newton
 boosting over that one class.
@@ -292,9 +561,10 @@ $$
 F_{m-1}(x_i)+\eta_k f_{m,k}(x_i)\right).
 $$
 
-Candidate fitting may run in parallel. In this mode, probabilities determine
-which candidates are eligible ($p_k>0$), but their magnitudes do not enter the
-loss comparison.
+For multiclass, $f_{m,k}(x)$ is the stacked $K$-class correction from family
+$k$. Candidate fitting may run in parallel. In this mode, probabilities
+determine which candidates are eligible ($p_k>0$), but their magnitudes do not
+enter the loss comparison.
 
 ### 5.3 Row subsampling
 
@@ -306,7 +576,12 @@ $$
 
 eligible observations, where $n_+$ is the number having positive effective
 weight $w_i h_i$. The learner is fit on that sample, while its predictions and
-greedy-selection loss are evaluated on the complete training set.
+greedy-selection loss are evaluated on the complete training set. Multiclass
+rounds subsample independently for each class $k$, using
+
+$$
+n_+^{(k)}=\bigl\lvert\{i:h_{i,k}>0\}\bigr\rvert.
+$$
 
 ### 5.4 Early stopping
 
@@ -314,9 +589,13 @@ For validation data, HNBM records
 
 $$
 \mathcal R_{\mathrm{val}}^{(m)}
-=\frac1{n_{\mathrm{val}}}\sum_i
-\ell(y_i^{\mathrm{val}},F_m(x_i^{\mathrm{val}})).
+=\frac{\sum_i w_i^{\mathrm{val}}\,
+\ell(y_i^{\mathrm{val}},F_m(x_i^{\mathrm{val}}))}
+{\sum_i w_i^{\mathrm{val}}},
 $$
+
+where $w^{\mathrm{val}}$ comes from `eval_sample_weight` and defaults to the
+uniform vector, recovering the unweighted mean.
 
 If improvement greater than `min_delta` does not occur for
 `early_stopping_rounds`, the fitted learner list is truncated back to the best
@@ -422,21 +701,31 @@ optimization.
 
 The implementation can be summarized as follows:
 
-1. Validate the learner pool and probabilities, map binary labels to
-   $\{-1,+1\}$ if needed, and compute $F_0$.
+1. Validate the learner pool and probabilities. Map binary labels to
+   $\{-1,+1\}$, or map multiclass labels to integer codes $0,\ldots,K-1$, and
+   compute $F_0$.
 2. For $m=1,\ldots,M$:
-   1. Compute $g_i$ and $h_i$ at $F_{m-1}(x_i)$.
+   1. Compute $g_i$ and $h_i$ at $F_{m-1}(x_i)$. For multiclass these are
+      $K$-vectors and the Hessian is the diagonal softmax approximation.
    2. Form $r_i=-g_i/h_i$ and $\widetilde w_i=w_i h_i$.
    3. Sample $K_m$ from the configured categorical distribution, or fit all
       eligible candidates and compare their updated losses.
    4. Optionally subsample positive-weight observations.
    5. Fit the selected cloneable regressor to $r_i$ with weights
-      $\widetilde w_i$.
+      $\widetilde w_i$. Multiclass fits one scalar regressor per class.
    6. Use fixed shrinkage or choose $\eta_m$ from the discrete line-search grid.
-   7. Add the scaled learner to $F_{m-1}$, record losses and metrics, and invoke
-      callbacks.
+   7. Add the scaled learner (or $K$ class learners) to $F_{m-1}$, record
+      losses and metrics, and invoke callbacks.
 3. Optionally restore the best validation ensemble.
 
+For a multiclass round the stacked update is
+
+$$
+F_{m,k}(x)=F_{m-1,k}(x)+\eta_m f_{m,k}(x),
+\qquad k=1,\ldots,K,
+$$
+
+with one scalar $f_{m,k}$ per class from the same hypothesis family.
 Prediction uses exactly
 
 $$
@@ -444,6 +733,8 @@ F_{M'}(x)=F_0+\sum_{m=1}^{M'}\eta_mf_m(x),
 $$
 
 where $M'\leq M$ after early stopping or explicit callback termination.
+Multiclass $F_{M'}(x)$ and $F_0$ are $K$-vectors; binary and regression remain
+scalars.
 
 ## 8. Comparison with traditional boosting methods
 
@@ -549,7 +840,9 @@ c_j=-\frac{\sum_{i\in R_j}w_i g_i}
 $$
 
 which is the weighted $\lambda=0$ analogue of XGBoost's regularized leaf
-formula. XGBoost incorporates the regularizer directly in leaf optimization
+formula. Multiclass applies the same leaf value independently to each class
+tree, using $(g_{i,k},h_{i,k})$ in place of $(g_i,h_i)$. XGBoost incorporates
+the regularizer directly in leaf optimization
 and split scoring. HNBM delegates regularization and function fitting to
 whichever learner was selected.
 
@@ -611,7 +904,9 @@ $$
 
 where $C_k$ is the cost of fitting class $k$. Greedy selection instead costs
 roughly $\sum_{k:p_k>0}C_k$ per round, reduced in wall-clock time when candidate
-fits run in parallel.
+fits run in parallel. Multiclass multiplies those costs by the number of
+output classes: each selected family is cloned once per class, so a round
+costs about $K_{\mathrm{out}}$ times a binary round.
 
 ## 12. Implementation-specific summary
 
@@ -620,7 +915,9 @@ HNBM implementation:
 
 - Base learners must be cloneable regressors whose `fit` explicitly accepts
   `sample_weight`.
-- Classification is binary and uses logistic loss.
+- Classification is binary logistic or multiclass softmax. Binary keeps a
+  scalar logit; multiclass fits $K$ scalar learners per round with a diagonal
+  Hessian.
 - Regression supports squared error, pseudo-Huber, and quantile objectives;
   quantile uses the unit-Hessian approximation described above.
 - Random learner selection is the default; greedy selection and the discrete
